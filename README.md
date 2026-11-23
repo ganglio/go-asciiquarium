@@ -6,15 +6,6 @@ an e-ink badge with a battery, written in Go for [TinyGo](https://tinygo.org).
 The tank is ASCII art: a line of waves on top, algae at the bottom, and one fish,
 `<o)))><`, that turns around by flipping to its mirror image `><(((o>`.
 
-```
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    *   **
-                      *  *
-        ><(((o>
-      )                               ))
-     (        )                       ((
-```
-
 The badge sleeps, and every minute it wakes up, lets the tank live for that long,
 and shows it: the fish is somewhere else, the algae has swayed. Press button A and
 5 to 10 pellets (`*`) drop from the middle of the tank, each at its own speed. The
@@ -25,6 +16,24 @@ At night, say from 22:00 to 07:00 by the badge's clock, the tank sleeps: the fis
 is gone, the picture is the negative of the day's, and there is only one every ten
 minutes, of the algae and a few bubbles slowly rising; see [Night](#night). All
 these times are settings, not fixed.
+
+## What it looks like
+
+These are the exact pixels the badge's screen gets, drawn by `make snapshot`.
+
+**By day**, the fish swims about and bubbles rise.
+
+![The tank by day](docs/screenshots/day.png)
+
+**Feeding**: press button A and pellets sink from the middle of the tank; the fish
+turns and goes for the nearest one.
+
+![Feeding the fish](docs/screenshots/feeding.png)
+
+**At night** the fish is gone, the picture is in negative, and only the algae and a few
+slowly rising bubbles are left.
+
+![The tank at night](docs/screenshots/night.png)
 
 It also runs on a computer, for debugging, with exactly the same logic.
 
@@ -79,6 +88,30 @@ left on the back) and a RESET button next to it. Hold BOOT, tap RESET, and a dri
 appears; `make flash` copies the firmware to it, or drag `bin/aquarium.uf2` there
 yourself. Check [Pimoroni's page](https://shop.pimoroni.com/products/badger-2350)
 if that is not how your badge does it.
+
+## This replaces the badge's firmware
+
+This is the firmware of the badge, not an app for it. Pimoroni's launcher and its apps
+are MicroPython: an app is a folder with an `__init__.py` and an icon that you copy to
+the badge's `apps` directory, and they run on Pimoroni's MicroPython firmware. A Go
+program built by TinyGo is native code and can't be one of them. Flashing it replaces
+Pimoroni's firmware, so the badge boots straight into the aquarium and there is no
+launcher or menu.
+
+- **Your apps are probably safe.** Pimoroni says their plain firmware image "will
+  replace only the firmware" and keep your apps, so the two live apart in the flash.
+  This firmware is about 100 KB and Pimoroni's is several MB. That is not tested here:
+  to be sure, copy your apps off first (double-tap RESET and a drive called Badger2350
+  appears; copy its `apps` folder).
+- **Getting back to Pimoroni's firmware.** Hold BOOT (far left on the back) and tap RESET,
+  and a drive called RP2350 appears: that mode is in the chip's own ROM, so no firmware
+  can take it away. Drop `badger-v3.1.1-micropython.uf2` from
+  [Pimoroni's releases](https://github.com/pimoroni/badger2350/releases/latest) on it to
+  get the launcher back with your apps; the `-with-filesystem` image resets the apps to
+  the defaults.
+- **Without their firmware** you also lose what comes with it: the launcher, the drive
+  mode on a double tap of RESET (to flash again, use BOOT and RESET), their Wi-Fi time
+  setting, and their deep sleep, which TinyGo can't use.
 
 ## How it works
 
