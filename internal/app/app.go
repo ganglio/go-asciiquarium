@@ -52,6 +52,10 @@ const (
 	defaultNightTo       = 7 * time.Hour
 	defaultNightInterval = 10 * time.Minute
 
+	// defaultNightPeek is how long the tank stays awake when the button is
+	// pressed at night.
+	defaultNightPeek = 30 * time.Second
+
 	day = 24 * time.Hour
 )
 
@@ -76,6 +80,10 @@ type Night struct {
 	// Interval is how often a picture of the sleeping tank is shown. Zero
 	// means there is no night.
 	Interval time.Duration
+	// Peek is how long the tank is shown as it is by day, with no feeding, when
+	// the button is pressed at night, before it goes back to sleep. Zero means
+	// the button does nothing at night.
+	Peek time.Duration
 }
 
 // Enabled reports whether the tank ever goes to sleep.
@@ -162,6 +170,8 @@ func (p Pace) Validate() error {
 		return fmt.Errorf("the tail must not be negative, not %v", p.Tail)
 	case p.Night.Interval < 0:
 		return fmt.Errorf("the time between pictures at night must not be negative, not %v", p.Night.Interval)
+	case p.Night.Peek < 0:
+		return fmt.Errorf("the peek at night must not be negative, not %v", p.Night.Peek)
 	case p.Night.From < 0 || p.Night.From >= day || p.Night.To < 0 || p.Night.To >= day:
 		return fmt.Errorf("the night must begin and end within a day, not %v to %v", p.Night.From, p.Night.To)
 	case p.Night.Interval > 0 && p.Night.From == p.Night.To:
@@ -173,7 +183,7 @@ func (p Pace) Validate() error {
 // Overrides are settings, as text, that replace parts of a pace: durations
 // like "2m" and a night like "23:00-06:30". What is empty is left alone.
 type Overrides struct {
-	Idle, Tail, Night, NightInterval string
+	Idle, Tail, Night, NightInterval, NightPeek string
 }
 
 // With is the pace with the overrides applied.
@@ -181,7 +191,7 @@ func (p Pace) With(o Overrides) (Pace, error) {
 	for _, setting := range []struct {
 		text string
 		into *time.Duration
-	}{{o.Idle, &p.Idle}, {o.Tail, &p.Tail}, {o.NightInterval, &p.Night.Interval}} {
+	}{{o.Idle, &p.Idle}, {o.Tail, &p.Tail}, {o.NightInterval, &p.Night.Interval}, {o.NightPeek, &p.Night.Peek}} {
 		if setting.text == "" {
 			continue
 		}
@@ -209,6 +219,7 @@ var DefaultPace = Pace{
 		From:     defaultNightFrom,
 		To:       defaultNightTo,
 		Interval: defaultNightInterval,
+		Peek:     defaultNightPeek,
 	},
 }
 
@@ -262,6 +273,9 @@ type App struct {
 	tank   *aquarium.Aquarium
 	clock  time.Time
 	asleep bool // it is night
+	frames int  // how many frames of RunLive have been shown
+
+	peekLeft time.Duration // how much is left of the peek RunLive is showing
 }
 
 // New creates the tank. The seed decides how it looks: the same seed always
@@ -325,6 +339,22 @@ func (p *App) advance(steps int) {
 // Step advances the tank by the time between two pictures of a burst.
 func (p *App) Step() { p.advance(StepsPerUpdate) }
 
+// Frame advances the tank by one animation step, which is what a frame of the
+// real-time view is. At night the algae sways and, one frame in each
+// aquarium.NightStepsPerUpdate, a bubble may start to rise, so that the night
+// has as many bubbles in the water as the badge's pictures of it.
+func (p *App) Frame() {
+	if p.asleep && p.frames%aquarium.NightStepsPerUpdate == 0 {
+		p.tank.NightBubble()
+	}
+	p.frames++
+	p.advance(1)
+}
+
+// PeekLeft is how much is left of the peek at the day that RunLive is showing
+// at night, or zero if there is none.
+func (p *App) PeekLeft() time.Duration { return p.peekLeft }
+
 // Drift lets the tank live for d, as much as it would in the real world: the
 // fish goes wherever it wants, the algae sways, bubbles come and go.
 func (p *App) Drift(d time.Duration) { p.advance(int(d / StepDuration)) }
@@ -341,6 +371,24 @@ func (p *App) Render(f *epd.Frame) {
 	}
 }
 
+// waitIgnoringTheButton waits for d, whatever is pressed meanwhile, and says
+// whether the program was asked to quit.
+func waitIgnoringTheButton(env Env, d time.Duration) (quit bool) {
+	end := env.Now().Add(d)
+	for {
+		left := end.Sub(env.Now())
+		if left <= 0 {
+			return false
+		}
+		switch env.Wait(left) {
+		case Quit:
+			return true
+		case Timeout:
+			return false
+		}
+	}
+}
+
 // Run runs the tank until env says to quit, which on the badge is never.
 //
 // While nothing is going on it waits pace.Idle, lets the tank live that long
@@ -352,8 +400,11 @@ func (p *App) Render(f *epd.Frame) {
 // At night, between pace.Night.From and pace.Night.To by the clock, the tank
 // goes to sleep: it shows one last picture of the day, and from then on one
 // every pace.Night.Interval, of the algae and the bubbles, in negative, until
-// the night is over. Pressing the button wakes the tank up for a feeding, as a
-// peek at the day; it goes back to sleep after.
+// the night is over. Pressing the button at night is a peek at the day: the
+// tank wakes up for pace.Night.Peek, with one picture of it, and nobody can
+// feed the fish; then it goes back to sleep. That is two pictures of the screen
+// instead of the dozens that a feeding takes. With no peek the button does
+// nothing at night.
 //
 // present is called every time there is a picture to show; it is expected to
 // take as long as the screen takes to refresh.
@@ -390,8 +441,14 @@ func (p *App) Run(env Env, pace Pace, present func(Kind)) {
 				case Quit:
 					return
 				case Pressed:
-					p.WakeUp()
-					p.Feed()
+					if pace.Night.Peek > 0 {
+						p.WakeUp()
+						present(Ambient) // the tank by day, with the fish where it was put
+						if waitIgnoringTheButton(env, pace.Night.Peek) {
+							return
+						}
+						// it goes back to sleep at the top of the loop
+					}
 				case Timeout:
 					if night, _ := pace.Night.state(env); night {
 						p.NightUpdate()
@@ -426,6 +483,64 @@ func (p *App) Run(env Env, pace Pace, present func(Kind)) {
 			return
 		case Pressed:
 			p.Feed()
+		}
+	}
+}
+
+// RunLive runs the tank in real time, until env says to quit: an animation step
+// every StepDuration, which is how the scene was made to be seen, with draw
+// called after each one. The badge's screen takes a second to refresh and can't
+// do this; it is for watching the tank on a computer, to see that it works.
+//
+// It is day and night by the clock as on the badge, and the button feeds the
+// fish by day. At night it is a peek at the day for night.Peek, with no
+// feeding, as on the badge; with no peek the button does nothing at night.
+//
+// A press that feeds the fish is drawn at once, between two steps.
+//
+// If draw is too slow the tank slows down with it instead of rushing to catch
+// up.
+func (p *App) RunLive(env Env, night Night, draw func()) {
+	var peekUntil time.Time
+	next := env.Now()
+	for {
+		clockNight, _ := night.state(env)
+		if !clockNight {
+			peekUntil = time.Time{} // a peek ends with the night
+		}
+		peeking := clockNight && env.Now().Before(peekUntil)
+		p.peekLeft = 0
+		if peeking {
+			p.peekLeft = peekUntil.Sub(env.Now())
+		}
+		switch asleep := clockNight && !peeking; {
+		case asleep && !p.asleep:
+			p.Sleep()
+		case !asleep && p.asleep:
+			p.WakeUp()
+		}
+		p.Frame()
+		draw()
+
+		next = next.Add(StepDuration)
+		if now := env.Now(); now.After(next) {
+			next = now // behind: do not try to catch up
+		}
+		for {
+			switch env.Wait(max(next.Sub(env.Now()), 0)) {
+			case Quit:
+				return
+			case Pressed:
+				switch {
+				case !clockNight:
+					p.Feed()
+					draw() // now, or a fish that is right there eats them before they are seen
+				case !peeking && night.Peek > 0:
+					peekUntil = env.Now().Add(night.Peek)
+				}
+				continue // and wait for the rest of the step
+			}
+			break
 		}
 	}
 }

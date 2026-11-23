@@ -4,6 +4,8 @@ package aquarium
 
 import (
 	"testing"
+
+	"go-asciiquarium/internal/anim"
 )
 
 const nightWidth, nightHeight = 44, 22
@@ -120,16 +122,17 @@ func TestANightBubbleRisesARowAPictureAndGrowsOnTheWay(t *testing.T) {
 		q.NightBubble()
 	}
 	b := a.EntitiesOfType("bubble")[0]
-	if b.Y != nightHeight-1 {
-		t.Fatalf("the bubble starts at y=%v, want the bottom row %d", b.Y, nightHeight-1)
+	if !aboveAStalk(a, b) {
+		t.Fatalf("the bubble starts at (%v, %v), which is not just above a stalk", b.X, b.Y)
 	}
+	top := int(b.Y)
 
 	lastFrame := b.Frame()
-	for picture := 1; picture <= nightHeight-1; picture++ {
+	for picture := 1; picture <= top; picture++ {
 		for range NightStepsPerUpdate {
 			a.Animate()
 		}
-		if want := float64(nightHeight - 1 - picture); b.Y < want-1e-9 || b.Y > want+1e-9 {
+		if want := float64(top - picture); b.Y < want-1e-9 || b.Y > want+1e-9 {
 			t.Fatalf("after %d pictures the bubble is at y=%v, want %v", picture, b.Y, want)
 		}
 		if f := b.Frame(); f < lastFrame {
@@ -147,6 +150,49 @@ func TestANightBubbleRisesARowAPictureAndGrowsOnTheWay(t *testing.T) {
 	}
 	if n := len(a.EntitiesOfType("bubble")); n != 0 {
 		t.Errorf("%d bubbles after it left the top", n)
+	}
+}
+
+// aboveAStalk reports whether a bubble is where one starts from a stalk of
+// algae: on the row above its top, over a column it takes up.
+func aboveAStalk(a *anim.Animation, b *anim.Entity) bool {
+	for _, stalk := range a.EntitiesOfType("algae") {
+		if b.Y == stalk.Y-1 && b.X >= stalk.X && b.X < stalk.X+float64(stalk.Width()) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestThereAreAlwaysBubblesAtNight(t *testing.T) {
+	const (
+		pictures = 600
+		warmUp   = 25 // pictures before the first bubbles have had time to rise
+	)
+	for seed := uint64(1); seed <= 5; seed++ {
+		q, a := newTank(nightWidth, nightHeight, seed)
+		q.SetNight(true)
+		var empty, total int
+		for picture := range pictures {
+			q.NightBubble()
+			for range NightStepsPerUpdate {
+				a.Animate()
+			}
+			if picture < warmUp {
+				continue
+			}
+			n := len(a.EntitiesOfType("bubble"))
+			total += n
+			if n == 0 {
+				empty++
+			}
+		}
+		if share := float64(empty) / (pictures - warmUp); share > maxEmptyShare {
+			t.Errorf("seed %d: %.1f%% of the night's pictures have no bubble", seed, share*percent)
+		}
+		if mean := float64(total) / (pictures - warmUp); mean < minNightBubbles {
+			t.Errorf("seed %d: %.1f bubbles in a picture of the night on average, want a few", seed, mean)
+		}
 	}
 }
 

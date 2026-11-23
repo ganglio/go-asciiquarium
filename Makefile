@@ -46,18 +46,20 @@ BIN := bin
 UF2 := $(BIN)/aquarium.uf2
 
 # Settings for the badge, which replace the defaults when they are given:
-#   make flash IDLE=2m NIGHT=23:00-06:30 NIGHT_INTERVAL=5m
+#   make flash IDLE=2m NIGHT=23:00-06:30 NIGHT_INTERVAL=5m NIGHT_PEEK=1m
 IDLE           ?=
 TAIL           ?=
 NIGHT          ?=
 NIGHT_INTERVAL ?=
+NIGHT_PEEK     ?=
 
 # What is built into the firmware: the settings above, and the time of the build,
 # which is how the badge's clock gets set (see cmd/badger/clock.go).
-LDFLAGS = -ldflags "-X main.buildTime=$$(date +%Y-%m-%dT%H:%M:%S) -X main.paceIdle=$(IDLE) -X main.paceTail=$(TAIL) -X main.paceNight=$(NIGHT) -X main.paceNightInterval=$(NIGHT_INTERVAL)"
+LDFLAGS = -ldflags "-X main.buildTime=$$(date +%Y-%m-%dT%H:%M:%S) -X main.paceIdle=$(IDLE) -X main.paceTail=$(TAIL) -X main.paceNight=$(NIGHT) -X main.paceNightInterval=$(NIGHT_INTERVAL) -X main.paceNightPeek=$(NIGHT_PEEK)"
 
-# Extra arguments for "make run" and "make snapshot", e.g.
-#   make run ARGS="-seed 42 -refresh 0"
+# Extra arguments for "make run", "make run-badge" and "make snapshot", e.g.
+#   make run ARGS="-seed 42 -time 21:59:50"
+#   make run-badge ARGS="-refresh 0"
 #   make snapshot ARGS="-feed -steps 1"
 ARGS ?=
 
@@ -96,8 +98,12 @@ install-dependencies: ## install what the badge build needs: TinyGo, into .tools
 ##@ On this computer
 
 .PHONY: run
-run: ## run in the terminal: f feeds the fish, r makes a new tank, q quits
+run: ## run in the terminal, in real time: f feeds the fish, r makes a new tank, q quits
 	$(GO) run ./cmd/aquarium $(ARGS)
+
+.PHONY: run-badge
+run-badge: ## run in the terminal at the badge's pace, with its e-ink screen simulated
+	$(GO) run ./cmd/aquarium -badge $(ARGS)
 
 .PHONY: snapshot
 snapshot: ## draw the badge's screen to bin/snapshot.png (try ARGS="-feed -steps 1")

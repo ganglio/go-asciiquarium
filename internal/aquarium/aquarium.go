@@ -55,15 +55,40 @@ const (
 	swayFrames     = 2   // the two shapes a stalk sways between
 	swayMinSpeed   = .25 // frames per step
 	swayExtraSpeed = .05 // the sway speed is up to this much more
+
+	// algaeBubblePercent is the chance, at each step, that a stalk releases a
+	// bubble. With the stalks the tank has this makes a bubble or two rise now
+	// and then, so that there are always a few in the water.
+	algaeBubblePercent = 6
 )
 
-// The bubbles: they grow as they rise.
+// The bubbles: they grow as they rise, and straight up, never sideways.
 var bubbleFrames = []string{".", "o", "O", "O", "O"}
 
-const (
-	bubbleRise   = -1 // rows per step; up is negative
-	bubbleGrowth = .1 // frames per step
-)
+const bubbleRise = -1 // rows per step; up is negative
+
+// bubbleGrowth is how many frames a bubble that starts on row y grows at each
+// step, if it takes stepsPerRow steps to rise a row, so that it is full size
+// when it gets to the top. The row it starts from counts one more than it is
+// high: otherwise the last frame would be one past the full size, which is the
+// smallest again.
+func bubbleGrowth(y float64, stepsPerRow int) float64 {
+	return float64(len(bubbleFrames)) / ((y + 1) * float64(stepsPerRow))
+}
+
+// newBubble is a bubble that starts at (x, y) and rises a row every
+// stepsPerRow steps.
+func newBubble(x, y, z float64, stepsPerRow int) anim.Config {
+	return anim.Config{
+		Type:         "bubble",
+		Shape:        bubbleFrames,
+		X:            x,
+		Y:            y,
+		Z:            z,
+		Delta:        anim.Delta{Y: float64(bubbleRise) / float64(stepsPerRow), Frame: bubbleGrowth(y, stepsPerRow)},
+		DieOffscreen: true,
+	}
+}
 
 // Options configure the aquarium.
 type Options struct {
@@ -155,14 +180,43 @@ func (q *Aquarium) addSeaweed() {
 	}
 	lifetime := algaeMinLife + time.Duration(q.irand(int(algaeExtraLife/time.Second)))*time.Second
 	q.a.Spawn(anim.Config{
+		Type:          "algae",
 		Shape:         frames,
 		X:             float64(algaeMargin + q.irand(q.a.Width()-2*algaeMargin)),
 		Y:             float64(q.a.Height() - height),
 		Z:             zSeaweed,
 		Delta:         anim.Delta{Frame: swayMinSpeed + q.rand(swayExtraSpeed)},
+		Callback:      q.algaeStep,
 		DieTime:       q.a.Now().Add(lifetime),
 		DeathCallback: q.respawnSeaweed,
 	})
+}
+
+// algaeStep sways a stalk and, by day, now and then lets it release a bubble.
+// At night the bubbles are let go by NightBubble, once for each picture.
+func (q *Aquarium) algaeStep(stalk *anim.Entity, a *anim.Animation) {
+	stalk.MoveEntity(a)
+	if !q.night && q.irand(percent) < algaeBubblePercent {
+		q.releaseBubble(q.aboveStalk(stalk))
+	}
+}
+
+// aboveStalk is where a bubble starts to rise from a stalk: on the row above
+// its top, over one of the columns it takes up.
+func (q *Aquarium) aboveStalk(stalk *anim.Entity) (x, y float64) {
+	return stalk.X + float64(q.irand(stalk.Width())), stalk.Y - 1
+}
+
+// releaseBubble starts a bubble of the day rising from (x, y), unless that is
+// above the water. It pops when it reaches the water surface.
+func (q *Aquarium) releaseBubble(x, y float64) {
+	if y < firstWaterRow {
+		return
+	}
+	bubble := newBubble(x, y, zFish+bubbleZ, 1)
+	bubble.Physical = true
+	bubble.CollisionHandler = bubbleCollision
+	q.a.Spawn(bubble)
 }
 
 // addBubble releases an air bubble from a fish that faces right or left.
@@ -172,17 +226,10 @@ func (q *Aquarium) addBubble(fish *anim.Entity, facingRight bool) {
 		x += float64(fish.Width())
 	}
 	y += float64(fish.Height() / 2)
-	q.a.Spawn(anim.Config{
-		Type:             "bubble",
-		Shape:            bubbleFrames,
-		X:                x,
-		Y:                y,
-		Z:                fish.Z + bubbleZ,
-		Delta:            anim.Delta{Y: bubbleRise, Frame: bubbleGrowth},
-		DieOffscreen:     true,
-		Physical:         true,
-		CollisionHandler: bubbleCollision,
-	})
+	bubble := newBubble(x, y, fish.Z+bubbleZ, 1)
+	bubble.Physical = true
+	bubble.CollisionHandler = bubbleCollision
+	q.a.Spawn(bubble)
 }
 
 // bubbleCollision pops a bubble when it reaches the water surface.

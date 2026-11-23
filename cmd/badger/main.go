@@ -30,7 +30,7 @@ const rngBits = 32
 // Settings that replace parts of the default pace, set by "make" with
 // -ldflags "-X main.paceIdle=2m ...", for instance make flash IDLE=2m
 // NIGHT=23:00-06:30. Empty means the default.
-var paceIdle, paceTail, paceNight, paceNightInterval string
+var paceIdle, paceTail, paceNight, paceNightInterval, paceNightPeek string
 
 // frame is the picture being drawn. It is a variable of its own, not part of
 // the stack, because it is a few kilobytes.
@@ -50,7 +50,7 @@ func main() {
 
 	display := epd.New(hw, epd.Config{})
 
-	pace, err := app.DefaultPace.With(app.Overrides{Idle: paceIdle, Tail: paceTail, Night: paceNight, NightInterval: paceNightInterval})
+	pace, err := app.DefaultPace.With(app.Overrides{Idle: paceIdle, Tail: paceTail, Night: paceNight, NightInterval: paceNightInterval, NightPeek: paceNightPeek})
 	if err != nil {
 		println("pace:", err.Error(), "- using the default one")
 		pace = app.DefaultPace

@@ -4,7 +4,8 @@ A tiny virtual aquarium for the [Pimoroni Badger 2350](https://shop.pimoroni.com
 an e-ink badge with a battery, written in Go for [TinyGo](https://tinygo.org).
 
 The tank is ASCII art: a line of waves on top, algae at the bottom, and one fish,
-`<o)))><`, that turns around by flipping to its mirror image `><(((o>`.
+`<o)))><`, that turns around by flipping to its mirror image `><(((o>`. Bubbles rise
+from the algae all the time, a few at once, and pop at the surface.
 
 The badge sleeps, and every minute it wakes up, lets the tank live for that long,
 and shows it: the fish is somewhere else, the algae has swayed. Press button A and
@@ -14,14 +15,15 @@ bottom stay there for it to eat. The screen refreshes as fast as it can while th
 goes on and for half a minute more, and then it is back to one picture a minute.
 At night, say from 22:00 to 07:00 by the badge's clock, the tank sleeps: the fish
 is gone, the picture is the negative of the day's, and there is only one every ten
-minutes, of the algae and a few bubbles slowly rising; see [Night](#night). All
-these times are settings, not fixed.
+minutes, of the algae and the bubbles slowly rising from it; see [Night](#night).
+Press the button then and the tank shows the day for half a minute, and goes back to
+sleep. All these times are settings, not fixed.
 
 ## What it looks like
 
 These are the exact pixels the badge's screen gets, drawn by `make snapshot`.
 
-**By day**, the fish swims about and bubbles rise.
+**By day**, the fish swims about and a steady stream of bubbles rises from the algae.
 
 ![The tank by day](docs/screenshots/day.png)
 
@@ -30,12 +32,13 @@ turns and goes for the nearest one.
 
 ![Feeding the fish](docs/screenshots/feeding.png)
 
-**At night** the fish is gone, the picture is in negative, and only the algae and a few
-slowly rising bubbles are left.
+**At night** the fish is gone, the picture is in negative, and only the algae and the
+bubbles slowly rising from it are left.
 
 ![The tank at night](docs/screenshots/night.png)
 
-It also runs on a computer, for debugging, with exactly the same logic.
+It also runs on a computer, for debugging, with exactly the same logic, in real
+time.
 
 > **Status: untested on a badge.** Everything that can be checked without one
 > is: the tests pass, also with TinyGo's compiler and runtime, and the firmware
@@ -45,21 +48,25 @@ It also runs on a computer, for debugging, with exactly the same logic.
 ## Try it on your computer
 
 ```sh
-make run                          # f feeds, n/d skip the clock to night/day, r new tank, q quits
+make run                          # real time; f feeds, n/d skip the clock to night/day, r new tank, q quits
 make run ARGS="-seed 42"          # the same seed always gives the same tank
-make run ARGS="-refresh 0"        # don't simulate the slow e-ink refresh
-make run ARGS="-idle 3s -tail 5s" # a faster pace, to watch it without waiting
-make run ARGS="-idle 3s -night-interval 5s"   # press n, and see it fall asleep
-make run ARGS="-time 21:59:30 -night 22:00-07:00"   # the clock says what you want
+make run ARGS="-time 21:59:50"    # the clock says what you want: watch it fall asleep
+make run-badge                    # at the badge's pace, with its slow e-ink screen simulated
+make run-badge ARGS="-refresh 0"  # ... without simulating the slow refresh
+make run-badge ARGS="-idle 3s -tail 5s -night-interval 5s"   # a faster pace, to watch it without waiting
 make snapshot ARGS="-feed -steps 1"   # draw the badge's screen to bin/snapshot.png
 make snapshot ARGS="-asleep -steps 40"  # ... as it is at night, 40 pictures in
 ```
 
-The terminal shows the 44x22 grid of characters, at the same pace as the badge
-(`-idle` and `-tail` change it). The status line says which phase it is in, and what
-the badge's screen would do: pictures shown, pictures skipped because nothing had
-changed, cleanings, and refreshes. `make snapshot` draws the real 264x176 pixels
-as the badge would, in black and white.
+`make run` shows the 44x22 grid of characters in real time: a step of the animation
+every tenth of a second, which is how the scene is made to be seen, so it is the way
+to check that the fish, the bubbles, the feeding and the night work. The badge can't
+do that, because its screen takes about a second to refresh; it shows a picture every
+few steps instead, and `make run-badge` shows exactly that, at the badge's pace
+(`-idle`, `-tail` and `-night-interval` change it). Its status line says which phase
+it is in, and what the badge's screen would do: pictures shown, pictures skipped
+because nothing had changed, cleanings, and refreshes. `make snapshot` draws the real
+264x176 pixels as the badge would, in black and white.
 
 ## Build it for the badge
 
@@ -88,7 +95,7 @@ To use a TinyGo of your own, put it on your `PATH` or say where it is:
 The times are settings of the firmware, and `make` takes them for the badge:
 
 ```sh
-make flash IDLE=2m NIGHT=23:00-06:30 NIGHT_INTERVAL=5m TAIL=45s
+make flash IDLE=2m NIGHT=23:00-06:30 NIGHT_INTERVAL=5m NIGHT_PEEK=1m TAIL=45s
 ```
 
 The build also stamps the firmware with the time it was built. That is how the
@@ -207,15 +214,19 @@ through midnight, as this one does, or fall inside a day (01:00-05:00).
   picture, so that the screen is clean for the night, and goes to sleep.
 - **The picture at night** is the *negative* of the day's: white on black. The fish is
   gone, and so are the water surface and the food. What is left is the algae, swaying,
-  and bubbles that start at the bottom now and then and rise.
+  and bubbles that start above a stalk of it now and then and rise.
 - **Slowly.** There is one picture every `Interval` (ten minutes). In each the algae
   has swayed once and every bubble has risen one row, and grown a little, to be full
-  size at the top, where it leaves. A bubble takes a bit over three hours to cross the
-  tank.
+  size at the top, where it leaves. A bubble takes about three hours to rise from the
+  algae to the top.
 - **Waking up.** When the night ends, to the second, the tank shows the day again, with
   a fish somewhere in the water.
-- **The button** wakes the tank for a feeding, as a peek at the day. When the burst is
-  over it goes back to sleep, if it is still night.
+- **The button** is a peek at the day: the tank wakes up and shows one picture of
+  itself by day, with a fish somewhere in the water, for `Peek` (half a minute, the
+  setting `NIGHT_PEEK`), and then goes back to sleep. Nobody can feed the fish at night:
+  that would be dozens of refreshes of the screen and the battery, and a peek is two. A
+  press during the peek does nothing. With `NIGHT_PEEK=0s` the button does nothing at
+  night.
 
 Without a time on the clock the tank never sleeps.
 

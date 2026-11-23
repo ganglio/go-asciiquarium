@@ -72,23 +72,24 @@ func TestSnapshotRejectsBadScale(t *testing.T) {
 }
 
 func TestPaceFromTheFlags(t *testing.T) {
-	pace, err := paceFrom(time.Minute, 30*time.Second, "23:00-06:30", 5*time.Minute)
+	pace, err := paceFrom(time.Minute, 30*time.Second, "23:00-06:30", 5*time.Minute, 45*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := app.Pace{Idle: time.Minute, Tail: 30 * time.Second, Night: app.Night{From: 23 * time.Hour, To: 6*time.Hour + 30*time.Minute, Interval: 5 * time.Minute}}
+	want := app.Pace{Idle: time.Minute, Tail: 30 * time.Second, Night: app.Night{From: 23 * time.Hour, To: 6*time.Hour + 30*time.Minute, Interval: 5 * time.Minute, Peek: 45 * time.Second}}
 	if pace != want {
 		t.Errorf("got %+v, want %+v", pace, want)
 	}
-	off, err := paceFrom(time.Minute, 30*time.Second, "off", 5*time.Minute)
+	off, err := paceFrom(time.Minute, 30*time.Second, "off", 5*time.Minute, 45*time.Second)
 	if err != nil || off.Night.Enabled() {
 		t.Errorf("a night that is off: %+v, %v", off.Night, err)
 	}
 	for _, bad := range []struct {
 		idle  time.Duration
 		night string
-	}{{0, "22:00-07:00"}, {time.Minute, "late"}, {time.Minute, "07:00-07:00"}} {
-		if _, err := paceFrom(bad.idle, time.Second, bad.night, time.Minute); err == nil {
+		peek  time.Duration
+	}{{0, "22:00-07:00", 0}, {time.Minute, "late", 0}, {time.Minute, "07:00-07:00", 0}, {time.Minute, "22:00-07:00", -time.Second}} {
+		if _, err := paceFrom(bad.idle, time.Second, bad.night, time.Minute, bad.peek); err == nil {
 			t.Errorf("%+v was accepted", bad)
 		}
 	}
@@ -123,7 +124,7 @@ func TestSettingTheClock(t *testing.T) {
 
 func TestTheKeysSkipTheClockToJustBeforeTheNightBeginsOrEnds(t *testing.T) {
 	changed := 0
-	term := &terminal{night: app.DefaultPace.Night, clockChanged: func() { changed++ }}
+	term := &terminal{night: app.DefaultPace.Night, skipBy: skipTo, clockChanged: func() { changed++ }}
 	term.skip(term.night.From)
 	now, _ := term.Clock()
 	if got := now.Sub(time.Date(now.Year(), now.Month(), now.Day(), 22, 0, 0, 0, now.Location())); got < -skipTo-time.Second || got > -skipTo+time.Second {
@@ -159,5 +160,25 @@ func TestNightSnapshotIsInNegative(t *testing.T) {
 	}
 	if d, n := black(&day), black(&night); d > epd.Width*epd.Height/10 || n < epd.Width*epd.Height*9/10 {
 		t.Errorf("%d black pixels by day and %d at night: the night should be the negative", d, n)
+	}
+}
+
+func TestInRealTimeTheKeysLandInTheNightAndInTheDay(t *testing.T) {
+	night := app.DefaultPace.Night
+	term := &terminal{night: night, skipBy: -liveSkip, clockChanged: func() {}}
+
+	term.skip(night.From) // the key n
+	if now, _ := term.Clock(); !night.At(now) {
+		t.Errorf("after n the clock says %s, which is not night", now.Format("15:04:05"))
+	}
+	term.skip(night.To) // the key d
+	if now, _ := term.Clock(); night.At(now) {
+		t.Errorf("after d the clock says %s, which is not day", now.Format("15:04:05"))
+	}
+	// And at the badge's pace they are just before the change.
+	term.skipBy = skipTo
+	term.skip(night.From)
+	if now, _ := term.Clock(); night.At(now) || !night.At(now.Add(skipTo)) {
+		t.Errorf("at the badge's pace n puts the clock at %s: want just before night", now.Format("15:04:05"))
 	}
 }

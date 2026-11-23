@@ -2,10 +2,8 @@
 
 package aquarium
 
-import "go-asciiquarium/internal/anim"
-
 // The night: the fish, the water surface and the food are gone and only the
-// algae is left, with bubbles that slowly rise from the bottom.
+// algae is left, with bubbles that slowly rise from it.
 const (
 	// NightStepsPerUpdate is how many animation steps pass between two pictures
 	// of the night. The algae sways swayMinSpeed frames a step, or a bit more,
@@ -46,8 +44,8 @@ func (q *Aquarium) removeAll(types ...string) {
 	}
 }
 
-// NightBubble now and then lets a bubble start to rise from the bottom of the
-// tank. Call it once for each picture of the night.
+// NightBubble now and then lets a bubble start to rise from a stalk of algae.
+// Call it once for each picture of the night.
 //
 // The bubble goes up a row for each picture, and grows a frame at a time on the
 // way so that it is full size at the top, where it leaves the tank.
@@ -55,14 +53,13 @@ func (q *Aquarium) NightBubble() {
 	if q.irand(percent) >= nightBubblePercent {
 		return
 	}
-	rows := q.a.Height()
-	q.a.Spawn(anim.Config{
-		Type:         "bubble",
-		Shape:        bubbleFrames,
-		X:            float64(q.irand(q.a.Width())),
-		Y:            float64(rows - 1),
-		Z:            zFish + bubbleZ,
-		Delta:        anim.Delta{Y: float64(bubbleRise) / NightStepsPerUpdate, Frame: float64(len(bubbleFrames)) / float64(rows*NightStepsPerUpdate)},
-		DieOffscreen: true,
-	})
+	stalks := q.a.EntitiesOfType("algae")
+	if len(stalks) == 0 {
+		return
+	}
+	x, y := q.aboveStalk(stalks[q.irand(len(stalks))])
+	if y < surfaceRow {
+		return
+	}
+	q.a.Spawn(newBubble(x, y, zFish+bubbleZ, NightStepsPerUpdate))
 }

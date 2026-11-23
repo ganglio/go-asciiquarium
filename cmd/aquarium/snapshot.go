@@ -9,10 +9,16 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"time"
 
 	"go-asciiquarium/internal/app"
 	"go-asciiquarium/internal/epd"
 )
+
+// snapshotWarmUp is how long a tank by day lives before its snapshot: a tank
+// that has just been made has no bubbles yet, and one that has been running for
+// a while always does.
+const snapshotWarmUp = 30 * time.Second
 
 var (
 	white = color.Gray{Y: math.MaxUint8}
@@ -20,7 +26,8 @@ var (
 )
 
 // takeSnapshot draws the tank as the badge's screen would show it and writes
-// it to a PNG file. If feed is set the fish is fed first; steps updates then
+// it to a PNG file. By day the tank has been running for snapshotWarmUp. If feed
+// is set the fish is fed first; steps updates then
 // run before the picture is taken, each one moving the tank on as one refresh
 // of the screen does. If asleep is set it is night: the fish is gone, the
 // picture is in negative, and each update is one picture of the night.
@@ -30,6 +37,8 @@ func takeSnapshot(tank *app.App, path string, scale int, feed, asleep bool, step
 	}
 	if asleep {
 		tank.Sleep()
+	} else {
+		tank.Drift(snapshotWarmUp)
 	}
 	if feed {
 		tank.Feed()

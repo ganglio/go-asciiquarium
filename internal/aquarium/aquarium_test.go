@@ -160,6 +160,7 @@ func TestBubblesRiseToTheSurfaceAndPop(t *testing.T) {
 
 func TestSeaweedSways(t *testing.T) {
 	q, a := newTestAquarium(80, 24, Options{}, 9)
+	q.SetNight(true) // no bubbles by the stalk: it is all that is drawn
 	q.addSeaweed()
 
 	stalk := func() []rune {
@@ -211,17 +212,18 @@ func TestSeaweedIsReplacedWhenItDies(t *testing.T) {
 	q, a := newTestAquarium(80, 24, Options{}, 2)
 	a.Now = func() time.Time { return now }
 	q.Populate()
-	before := a.EntityCount()
+	stalks := func() int { return len(a.EntitiesOfType("algae")) }
+	before := stalks()
 	now = now.Add(algaeMinLife + algaeExtraLife + time.Minute) // longer than any stalk lives
 	a.Animate()
-	// Each stalk is replaced by a new one, so there are as many as before
-	// (plus perhaps a bubble) and none is left to expire right away.
-	if after := a.EntityCount(); after < before || after > before+1 {
-		t.Errorf("entity count went from %d to %d: seaweed was not replaced", before, after)
+	// Each stalk is replaced by a new one, so there are as many as before and
+	// none is left to expire right away.
+	if after := stalks(); after != before {
+		t.Errorf("%d stalks became %d: seaweed was not replaced", before, after)
 	}
 	a.Animate()
-	if a.EntityCount() < before {
-		t.Errorf("entities vanished: %d -> %d", before, a.EntityCount())
+	if after := stalks(); after != before {
+		t.Errorf("%d stalks became %d a step later", before, after)
 	}
 }
 

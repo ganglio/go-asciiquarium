@@ -2,25 +2,32 @@
 
 // Aquarium runs the badge's aquarium on a computer, for debugging.
 //
-// It runs the same code as the firmware, at the same pace: the tank is a grid
-// of 44x22 characters, it is shown every half minute when nothing is going on,
-// and feeding the fish makes the pictures come back to back until the fish has
-// eaten everything and for half a minute more. The terminal shows the
-// characters; what the badge's screen would do is counted in the status line,
-// and the refresh time of the e-ink is simulated (-refresh).
+// It runs the same code as the firmware. By default it runs in real time: a
+// step of the animation every tenth of a second, which is how the scene is made
+// to be seen, so that you can check the fish, the bubbles, the feeding and the
+// night at a glance. The badge cannot do that: its screen takes a second to
+// refresh.
 //
-// To see it without waiting a minute: make run ARGS="-idle 3s -tail 5s".
+// With -badge it runs at the pace of the badge instead: the tank is a grid of
+// 44x22 characters, shown once a minute when nothing is going on, and feeding
+// the fish makes the pictures come back to back until the fish has eaten
+// everything and for half a minute more. The terminal shows the characters;
+// what the badge's screen would do is counted in the status line, and the
+// refresh time of the e-ink is simulated (-refresh). To see that without
+// waiting a minute: make run-badge ARGS="-idle 3s -tail 5s".
 //
 // At night, between two times of day (-night 22:00-07:00), the tank goes to
-// sleep: no fish, the picture in negative, and one every ten minutes of the
-// algae and a few bubbles. The badge reads the time from its real-time clock;
-// here it is the clock of this computer, which you can set (-time 21:58) or
-// skip ahead (keys n and d).
+// sleep: no fish, the picture in negative, and bubbles that rise from the
+// algae. The badge reads the time from its real-time clock; here it is the
+// clock of this computer, which you can set (-time 21:58) or skip ahead (keys n
+// and d). The button at night is a peek at the day (-night-peek 30s) with no
+// feeding; on the badge it is the picture and then the night again.
 //
-// To see it quickly: make run ARGS="-idle 3s -night-interval 5s", then press n.
+// To see it quickly: make run ARGS="-time 21:59:50", or press n.
 //
-// Keys: f feed the fish, n the clock jumps to just before night begins, d to
-// just before it ends, r start over with a new tank, q quit.
+// Keys: f feed the fish, n the clock jumps to just after night begins, d to
+// just after it ends (with -badge: to 5 s before, for the next picture to see
+// it), r start over with a new tank, q quit.
 //
 // With -snapshot the tank is drawn to a PNG file instead, exactly as it would
 // be on the badge's screen, without a terminal.
@@ -55,8 +62,13 @@ const (
 	statusRow = epd.Rows + 1
 
 	// skipTo is how long before night begins, or ends, the keys n and d put the
-	// clock.
+	// clock when the program is at the badge's pace: it takes a picture or two
+	// to notice, and the clock is then right at the change.
 	skipTo = 5 * time.Second
+
+	// liveSkip is how long after night begins, or ends, they put it in real
+	// time, where the change is to be seen as soon as the key is pressed.
+	liveSkip = time.Second
 
 	// How a time of day is written in -time: with or without the seconds.
 	clockFormat        = "15:04"
@@ -65,11 +77,13 @@ const (
 
 func main() {
 	seed := flag.Uint64("seed", 0, "seed for the tank; the same seed gives the same tank (0: random)")
-	refresh := flag.Duration("refresh", defaultRefresh, "how long the simulated e-ink screen takes to refresh")
-	idle := flag.Duration("idle", app.DefaultPace.Idle, "time between pictures when nothing is going on")
-	tail := flag.Duration("tail", app.DefaultPace.Tail, "how long pictures keep coming back to back after the fish has eaten the last pellet")
+	badge := flag.Bool("badge", false, "run at the pace of the badge, with its e-ink screen simulated, instead of in real time")
+	refresh := flag.Duration("refresh", defaultRefresh, "with -badge: how long the simulated e-ink screen takes to refresh")
+	idle := flag.Duration("idle", app.DefaultPace.Idle, "with -badge: time between pictures when nothing is going on")
+	tail := flag.Duration("tail", app.DefaultPace.Tail, "with -badge: how long pictures keep coming back to back after the fish has eaten the last pellet")
 	night := flag.String("night", app.DefaultPace.Night.String(), `the night: two times of day, like 22:00-07:00, or "off"`)
-	nightInterval := flag.Duration("night-interval", app.DefaultPace.Night.Interval, "time between pictures at night")
+	nightInterval := flag.Duration("night-interval", app.DefaultPace.Night.Interval, "with -badge: time between pictures at night")
+	nightPeek := flag.Duration("night-peek", app.DefaultPace.Night.Peek, "how long the button shows the day at night, with no feeding (0: the button does nothing at night)")
 	clock := flag.String("time", "", "the time of day on the clock when the program starts, like 21:58 or 21:58:30 (default: the real one)")
 	snapshot := flag.String("snapshot", "", "write the tank to this PNG file and exit, instead of running")
 	feed := flag.Bool("feed", false, "with -snapshot: feed the fish first")
@@ -83,7 +97,7 @@ func main() {
 	}
 	tank := app.New(*seed, *seed^seedStride)
 
-	pace, err := paceFrom(*idle, *tail, *night, *nightInterval)
+	pace, err := paceFrom(*idle, *tail, *night, *nightInterval, *nightPeek)
 	offset, clockErr := clockOffset(*clock, time.Now())
 	switch {
 	case err != nil:
@@ -91,8 +105,10 @@ func main() {
 		err = clockErr
 	case *snapshot != "":
 		err = takeSnapshot(tank, *snapshot, *scale, *feed, *asleep, *steps)
-	default:
+	case *badge:
 		err = run(tank, pace, *seed, *refresh, offset)
+	default:
+		err = runLive(tank, pace.Night, *seed, offset)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aquarium:", err)
@@ -101,14 +117,14 @@ func main() {
 }
 
 // paceFrom makes a pace out of what the flags say.
-func paceFrom(idle, tail time.Duration, night string, nightInterval time.Duration) (app.Pace, error) {
+func paceFrom(idle, tail time.Duration, night string, nightInterval, nightPeek time.Duration) (app.Pace, error) {
 	pace := app.Pace{Idle: idle, Tail: tail}
 	if night != "off" {
 		from, to, err := app.ParseNight(night)
 		if err != nil {
 			return pace, err
 		}
-		pace.Night = app.Night{From: from, To: to, Interval: nightInterval}
+		pace.Night = app.Night{From: from, To: to, Interval: nightInterval, Peek: nightPeek}
 	}
 	return pace, pace.Validate()
 }
@@ -153,7 +169,7 @@ func run(tank *app.App, pace app.Pace, seed uint64, refresh time.Duration, clock
 	display := epd.New(sim, epd.Config{})
 	var frame epd.Frame
 	last := app.Settle
-	env := &terminal{offset: clockOffset, night: pace.Night}
+	env := &terminal{offset: clockOffset, night: pace.Night, skipBy: skipTo}
 
 	status := func() {
 		s := display.Stats()
@@ -167,15 +183,7 @@ func run(tank *app.App, pace app.Pace, seed uint64, refresh time.Duration, clock
 		now, _ := env.Clock()
 		line := fmt.Sprintf("%s | pictures %d, skipped %d, cleans %d, refreshes %d | clock %s, night %v | idle %v, tail %v | seed %d | f feed  n night  d day  r new tank  q quit",
 			label, s.Pictures, s.Skipped, s.Cleans, sim.Refreshes, now.Format("15:04:05"), nightLabel(pace.Night), pace.Idle, pace.Tail, seed)
-		width, _ := screen.Size()
-		for x := range width {
-			r := ' '
-			if x < len(line) {
-				r = rune(line[x])
-			}
-			screen.SetContent(x, statusRow, r, nil, tcell.StyleDefault)
-		}
-		screen.Show()
+		showStatus(screen, line)
 	}
 
 	redraw := func() {
@@ -193,14 +201,7 @@ func run(tank *app.App, pace app.Pace, seed uint64, refresh time.Duration, clock
 		status() // the counts have changed
 	}
 
-	events := make(chan tcell.Event)
-	go func() {
-		for ev := screen.PollEvent(); ev != nil; ev = screen.PollEvent() {
-			events <- ev
-		}
-	}()
-
-	env.events = events
+	env.events = pollEvents(screen)
 	env.resized = func() {
 		screen.Sync()
 		redraw()
@@ -214,6 +215,31 @@ func run(tank *app.App, pace app.Pace, seed uint64, refresh time.Duration, clock
 	return nil
 }
 
+// showStatus writes the status line under the tank, and shows what is on the
+// screen.
+func showStatus(screen tcell.Screen, line string) {
+	width, _ := screen.Size()
+	for x := range width {
+		r := ' '
+		if x < len(line) {
+			r = rune(line[x])
+		}
+		screen.SetContent(x, statusRow, r, nil, tcell.StyleDefault)
+	}
+	screen.Show()
+}
+
+// pollEvents passes what happens in the terminal on to a channel.
+func pollEvents(screen tcell.Screen) <-chan tcell.Event {
+	events := make(chan tcell.Event)
+	go func() {
+		for ev := screen.PollEvent(); ev != nil; ev = screen.PollEvent() {
+			events <- ev
+		}
+	}()
+	return events
+}
+
 // terminal is the outside world of the tank when it runs in a terminal: the
 // clock, and the keyboard standing in for the button.
 type terminal struct {
@@ -224,6 +250,7 @@ type terminal struct {
 
 	offset time.Duration // the clock is this far from the real one
 	night  app.Night
+	skipBy time.Duration // n and d put the clock this long before the change; negative is after
 }
 
 func (t *terminal) Now() time.Time { return time.Now() }
@@ -232,11 +259,11 @@ func (t *terminal) Now() time.Time { return time.Now() }
 // always a way to tell.
 func (t *terminal) Clock() (time.Time, bool) { return time.Now().Add(t.offset), true }
 
-// skip sets the clock to skipTo before a time of day, which goes on from there.
+// skip sets the clock to skipBy before a time of day, which goes on from there.
 func (t *terminal) skip(timeOfDay time.Duration) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	t.offset = midnight.Add(timeOfDay - skipTo).Sub(now)
+	t.offset = midnight.Add(timeOfDay - t.skipBy).Sub(now)
 	t.clockChanged()
 }
 

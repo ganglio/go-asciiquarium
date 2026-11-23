@@ -621,43 +621,125 @@ func TestStartingAtNightStartsWithANightPicture(t *testing.T) {
 	}
 }
 
-func TestPressingTheButtonAtNightShowsTheDayTankAndThenItSleepsAgain(t *testing.T) {
-	p := New(1, 2)
-	w := worldAt(hours(23), 3*time.Hour, 90*time.Minute)
-	var seen []picture
-	var fishInBurst int
-	p.Run(w, nightPace, func(k Kind) {
-		seen = append(seen, picture{k, w.now, p.Asleep()})
-		if k == Burst && len(p.anim.EntitiesOfType("fish")) == 1 {
-			fishInBurst++
-		}
+// peekPace is the night of nightPace with a peek of half a minute.
+var peekPace = func() Pace {
+	p := nightPace
+	p.Night.Peek = 30 * time.Second
+	return p
+}()
+
+// asleepAt records, for each picture, whether the tank was asleep in it and
+// how much food it held.
+type nightPicture struct {
+	kind   Kind
+	at     time.Time
+	asleep bool
+	fish   int
+	food   int
+}
+
+func runRecordingNight(p *App, w *world, pace Pace) []nightPicture {
+	var out []nightPicture
+	p.Run(w, pace, func(k Kind) {
+		out = append(out, nightPicture{k, w.now, p.Asleep(), len(p.anim.EntitiesOfType("fish")), p.tank.FoodCount()})
 		w.now = w.now.Add(testRefresh)
 	})
+	return out
+}
 
-	burst := slices.IndexFunc(seen, func(p picture) bool { return p.kind == Burst })
-	if burst < 0 {
-		t.Fatalf("the press at night did nothing: %v", kinds(seen))
-	}
-	if fishInBurst == 0 {
-		t.Error("there was no fish to feed")
-	}
-	for i := burst; i < len(seen) && seen[i].kind == Burst; i++ {
-		if seen[i].active { // active holds Asleep() here
-			t.Errorf("burst picture %d is a night picture", i)
+func TestPressingTheButtonAtNightIsAPeekAtTheDay(t *testing.T) {
+	const pressAt = 90 * time.Minute
+	p := New(1, 2)
+	w := worldAt(hours(23), 3*time.Hour, pressAt)
+	seen := runRecordingNight(p, w, peekPace)
+
+	// Which pictures came from the press: those between it and the next picture
+	// of the night at its own pace.
+	pressTime := time.Unix(0, 0).Add(pressAt)
+	var peek []nightPicture
+	for _, pic := range seen {
+		if !pic.at.Before(pressTime) && pic.at.Before(pressTime.Add(peekPace.Night.Peek+10*time.Second)) {
+			peek = append(peek, pic)
 		}
 	}
-	// After it: asleep again, with night pictures at the night's pace.
-	after := seen[slices.IndexFunc(seen[burst:], func(p picture) bool { return p.kind == Settle })+burst:]
-	if len(after) < 3 {
-		t.Fatalf("too few pictures after the burst: %v", kinds(after))
+	if len(peek) != 2 {
+		t.Fatalf("the press made %d pictures: %v, want the day and the night again", len(peek), peek)
 	}
-	if !after[1].active || after[1].kind != Settle {
-		// the first Settle ends the burst, the second one puts the tank to sleep
-		t.Errorf("after the burst: %v, expected it to go to sleep with a Settle", kinds(after))
+	day, night := peek[0], peek[1]
+	if day.kind != Ambient || day.asleep || day.fish != 1 {
+		t.Errorf("the peek is %+v: want one picture of the tank by day, with its fish", day)
 	}
-	last := after[len(after)-1]
-	if last.kind != Ambient || !last.active {
-		t.Errorf("the last picture is a %v, asleep: %v", last.kind, last.active)
+	if night.kind != Settle || !night.asleep || night.fish != 0 {
+		t.Errorf("after the peek: %+v, want it asleep again, with a clean Settle", night)
+	}
+	if got := night.at.Sub(day.at); got < testRefresh+peekPace.Night.Peek {
+		t.Errorf("the day was shown for %v, want at least the peek of %v", got-testRefresh, peekPace.Night.Peek)
+	}
+	for _, pic := range seen {
+		if pic.kind == Burst || pic.food > 0 {
+			t.Fatalf("the fish was fed at night: %+v", pic)
+		}
+	}
+	// The night goes on at its own pace afterwards.
+	last := seen[len(seen)-1]
+	if last.kind != Ambient || !last.asleep {
+		t.Errorf("the last picture is %+v, want a night one", last)
+	}
+}
+
+func TestAPeekIsIgnoredWhenItsOverTheButtonIsPressedDuringIt(t *testing.T) {
+	const pressAt = 90 * time.Minute
+	p := New(1, 2)
+	w := worldAt(hours(23), 3*time.Hour, pressAt, pressAt+10*time.Second, pressAt+20*time.Second)
+	seen := runRecordingNight(p, w, peekPace)
+	var days int
+	for _, pic := range seen {
+		if !pic.asleep {
+			days++
+		}
+		if pic.kind == Burst || pic.food > 0 {
+			t.Fatalf("the fish was fed at night: %+v", pic)
+		}
+	}
+	if days != 1 {
+		t.Errorf("%d pictures of the day, want exactly one: the presses during the peek do nothing", days)
+	}
+	// And the peek did not get longer: it goes back to sleep after the first press's 30 s.
+	var sleptAgain time.Time
+	for _, pic := range seen {
+		if pic.kind == Settle && pic.asleep && pic.at.After(time.Unix(0, 0).Add(pressAt)) {
+			sleptAgain = pic.at
+			break
+		}
+	}
+	if limit := time.Unix(0, 0).Add(pressAt + peekPace.Night.Peek + 2*testRefresh); sleptAgain.IsZero() || sleptAgain.After(limit) {
+		t.Errorf("it slept again at %v, want by %v", sleptAgain, limit)
+	}
+}
+
+func TestWithoutAPeekTheButtonDoesNothingAtNight(t *testing.T) {
+	quiet := nightPace // no Peek
+	with := runRecordingNight(New(1, 2), worldAt(hours(23), 3*time.Hour, 90*time.Minute), quiet)
+	without := runRecordingNight(New(1, 2), worldAt(hours(23), 3*time.Hour), quiet)
+	// An ignored press only restarts the wait for the next picture of the night,
+	// which can move one of them past the end: it must not add or take more.
+	if d := len(with) - len(without); d < -1 || d > 1 {
+		t.Fatalf("pressing the button changed the pictures: %d against %d", len(with), len(without))
+	}
+	for _, pic := range with {
+		if pic.kind == Burst || !pic.asleep && pic.at.After(time.Unix(0, 0).Add(time.Minute)) {
+			t.Fatalf("the tank woke up: %+v", pic)
+		}
+	}
+}
+
+func TestAPeekEndsWhenTheProgramIsAskedToQuit(t *testing.T) {
+	const pressAt = 90 * time.Minute
+	p := New(1, 2)
+	w := worldAt(hours(23), pressAt+10*time.Second, pressAt)
+	seen := runRecordingNight(p, w, peekPace) // returns, and does not hang
+	if last := seen[len(seen)-1]; last.asleep {
+		t.Errorf("quit during the peek: the last picture is %+v", last)
 	}
 }
 
@@ -725,10 +807,14 @@ func TestPaceValidate(t *testing.T) {
 	if got := DefaultPace.Night.String(); got != "22:00-07:00" {
 		t.Errorf("the default night is %s", got)
 	}
+	if DefaultPace.Night.Peek != 30*time.Second {
+		t.Errorf("the default peek at night is %v, want half a minute", DefaultPace.Night.Peek)
+	}
 	for name, pace := range map[string]Pace{
 		"no time between pictures": {Idle: 0, Tail: time.Second},
 		"negative tail":            {Idle: time.Second, Tail: -time.Second},
 		"negative night interval":  {Idle: time.Second, Night: Night{From: hours(1), To: hours(2), Interval: -time.Second}},
+		"negative night peek":      {Idle: time.Second, Night: Night{From: hours(1), To: hours(2), Interval: time.Minute, Peek: -time.Second}},
 		"a night past a day":       {Idle: time.Second, Night: Night{From: hours(1), To: hours(25), Interval: time.Minute}},
 		"a night before midnight":  {Idle: time.Second, Night: Night{From: -time.Hour, To: hours(2), Interval: time.Minute}},
 		"a night with no length":   {Idle: time.Second, Night: Night{From: hours(3), To: hours(3), Interval: time.Minute}},
@@ -744,20 +830,225 @@ func TestPaceValidate(t *testing.T) {
 }
 
 func TestOverrides(t *testing.T) {
-	pace, err := DefaultPace.With(Overrides{Idle: "2m", Tail: "45s", Night: "23:00-06:30", NightInterval: "5m"})
+	pace, err := DefaultPace.With(Overrides{Idle: "2m", Tail: "45s", Night: "23:00-06:30", NightInterval: "5m", NightPeek: "1m"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Pace{Idle: 2 * time.Minute, Tail: 45 * time.Second, Night: Night{From: hours(23), To: 6*time.Hour + 30*time.Minute, Interval: 5 * time.Minute}}
+	want := Pace{Idle: 2 * time.Minute, Tail: 45 * time.Second, Night: Night{From: hours(23), To: 6*time.Hour + 30*time.Minute, Interval: 5 * time.Minute, Peek: time.Minute}}
 	if pace != want {
 		t.Errorf("got %+v, want %+v", pace, want)
 	}
 	if same, err := DefaultPace.With(Overrides{}); err != nil || same != DefaultPace {
 		t.Errorf("no overrides changed the pace: %+v, %v", same, err)
 	}
-	for _, bad := range []Overrides{{Idle: "soon"}, {Tail: "-5s"}, {Night: "late"}, {NightInterval: "x"}, {Idle: "0s"}, {Night: "07:00-07:00"}} {
+	for _, bad := range []Overrides{{Idle: "soon"}, {Tail: "-5s"}, {Night: "late"}, {NightInterval: "x"}, {Idle: "0s"}, {Night: "07:00-07:00"}, {NightPeek: "-1s"}, {NightPeek: "later"}} {
 		if _, err := DefaultPace.With(bad); err == nil {
 			t.Errorf("%+v was accepted", bad)
 		}
+	}
+}
+
+// frame is what the real-time view showed in one frame.
+type frame struct {
+	at       time.Time
+	steps    int // animation steps the tank has lived through so far
+	asleep   bool
+	food     int
+	fish     int
+	bubbles  int
+	peekLeft time.Duration
+}
+
+// runLive runs the tank in real time in a world, with drawTime to draw a frame.
+func runLive(p *App, w *world, night Night, drawTime time.Duration) []frame {
+	var out []frame
+	p.RunLive(w, night, func() {
+		out = append(out, frame{
+			at:       w.now,
+			steps:    int(p.clock.Sub(startOfTime) / StepDuration),
+			asleep:   p.Asleep(),
+			food:     p.tank.FoodCount(),
+			fish:     len(p.anim.EntitiesOfType("fish")),
+			bubbles:  len(p.anim.EntitiesOfType("bubble")),
+			peekLeft: p.PeekLeft(),
+		})
+		w.now = w.now.Add(drawTime)
+	})
+	return out
+}
+
+func TestLiveShowsAFrameForEachStepOfTheAnimation(t *testing.T) {
+	const duration = 30 * time.Second
+	frames := runLive(New(1, 2), newWorld(duration), Night{}, 0)
+	if want := int(duration / StepDuration); len(frames) != want {
+		t.Errorf("%d frames in %v, want %d", len(frames), duration, want)
+	}
+	for i, f := range frames {
+		if f.at.Sub(time.Unix(0, 0)) != time.Duration(i)*StepDuration {
+			t.Fatalf("frame %d is shown at %v, want %v", i, f.at.Sub(time.Unix(0, 0)), time.Duration(i)*StepDuration)
+		}
+		if f.steps != i+1 {
+			t.Fatalf("frame %d is after %d steps, want one more each time: %d", i, f.steps, i+1)
+		}
+		if f.asleep || f.fish != 1 {
+			t.Fatalf("frame %d: %+v, want the tank by day", i, f)
+		}
+	}
+}
+
+func TestLiveFeedsTheFishWithoutLosingTheBeat(t *testing.T) {
+	const pressAt = 5*time.Second + StepDuration/2 // between two frames
+	frames := runLive(New(1, 2), newWorld(40*time.Second, pressAt), Night{}, 0)
+	fed, shownAtOnce := false, false
+	var before *frame // the last frame of the beat
+	for i, f := range frames {
+		at := f.at.Sub(time.Unix(0, 0))
+		if at == pressAt { // the press is drawn at once, between two frames
+			shownAtOnce = f.food > 0
+			continue
+		}
+		if before != nil && f.at.Sub(before.at) != StepDuration {
+			t.Fatalf("frame %d came %v after the one before: the press changed the beat", i, f.at.Sub(before.at))
+		}
+		before = &frames[i]
+		if at < pressAt && f.food > 0 {
+			t.Fatalf("there is food at %v, before the press", at)
+		}
+		fed = fed || f.food > 0
+	}
+	if !fed {
+		t.Error("the press did not drop any food")
+	}
+	if !shownAtOnce {
+		t.Error("the pellets were not drawn at the moment of the press")
+	}
+	if last := frames[len(frames)-1]; last.food != 0 {
+		t.Errorf("%d pellets are left after 35 s: the fish should have eaten them", last.food)
+	}
+}
+
+func TestLiveGoesToSleepAndWakesUpByTheClock(t *testing.T) {
+	// From 21:59:50 to 22:00:10 and from 06:59:50 to 07:00:10.
+	for _, tt := range []struct {
+		name       string
+		startsAt   time.Duration
+		asleepFrom bool
+	}{
+		{"evening", hours(22) - 10*time.Second, true},
+		{"morning", hours(7) - 10*time.Second, false},
+	} {
+		frames := runLive(New(1, 2), worldAt(tt.startsAt, 20*time.Second), nightPace.Night, 0)
+		for _, f := range frames {
+			boundary := f.at.Sub(time.Unix(0, 0)) >= 10*time.Second
+			if want := tt.asleepFrom == boundary; f.asleep != want {
+				t.Fatalf("%s: asleep = %v at %v, want %v", tt.name, f.asleep, f.at.Sub(time.Unix(0, 0)), want)
+			}
+		}
+		last := frames[len(frames)-1]
+		if tt.asleepFrom != last.asleep || (last.fish == 1) == last.asleep {
+			t.Errorf("%s: the last frame is %+v", tt.name, last)
+		}
+	}
+}
+
+// What a frame of the real-time view has in the water, on average, by day and at night.
+const liveBubblesMin, liveBubblesMax = 2, 9
+
+func TestLiveHasBubblesAtNightAndByDay(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		startsAt time.Duration
+	}{{"day", hours(12)}, {"night", hours(23)}} {
+		frames := runLive(New(1, 2), worldAt(tt.startsAt, 5*time.Minute), nightPace.Night, 0)
+		var empty, total int
+		steady := frames[len(frames)/10:] // after the first bubbles have risen
+		for _, f := range steady {
+			total += f.bubbles
+			if f.bubbles == 0 {
+				empty++
+			}
+		}
+		if share := float64(empty) / float64(len(steady)); share > .03 {
+			t.Errorf("%s: %.1f%% of the frames have no bubble", tt.name, share*100)
+		}
+		// About as many as a picture of the badge's night has (five or so), however
+		// many frames there are: a bubble is let go every few frames, not each one.
+		if mean := float64(total) / float64(len(steady)); mean < liveBubblesMin || mean > liveBubblesMax {
+			t.Errorf("%s: %.1f bubbles in the water on average, want %v to %v", tt.name, mean, liveBubblesMin, liveBubblesMax)
+		}
+	}
+}
+
+func TestLiveAPeekAtNightIsTheDayForAWhileWithNoFeeding(t *testing.T) {
+	const pressAt = 10 * time.Second
+	night := nightPace.Night
+	night.Peek = 30 * time.Second
+	// A second press, in the middle of the peek, does nothing.
+	frames := runLive(New(1, 2), worldAt(hours(23), 2*time.Minute, pressAt, pressAt+15*time.Second), night, 0)
+	for _, f := range frames {
+		since := f.at.Sub(time.Unix(0, 0)) - pressAt
+		awake := since >= 0 && since < night.Peek
+		if f.asleep == awake {
+			t.Fatalf("asleep = %v at %v after the press, want %v", f.asleep, since, !awake)
+		}
+		// The time left is what the status line counts down.
+		if want := night.Peek - since; awake && f.peekLeft != want || !awake && f.peekLeft != 0 {
+			t.Fatalf("%v left of the peek at %v after the press, want %v", f.peekLeft, since, max(want, 0))
+		}
+		if f.food > 0 {
+			t.Fatalf("the fish was fed at night, at %v", since)
+		}
+	}
+}
+
+func TestLiveWithoutAPeekTheButtonDoesNothingAtNight(t *testing.T) {
+	frames := runLive(New(1, 2), worldAt(hours(23), time.Minute, 10*time.Second), nightPace.Night, 0)
+	for _, f := range frames {
+		if !f.asleep || f.food > 0 {
+			t.Fatalf("the press changed the night: %+v", f)
+		}
+	}
+}
+
+func TestLiveDoesNotRushToCatchUpWhenDrawingIsSlow(t *testing.T) {
+	const duration = time.Minute
+	slow := 3 * StepDuration
+	frames := runLive(New(1, 2), newWorld(duration), Night{}, slow)
+	if want := int(duration / slow); len(frames) != want {
+		t.Errorf("%d frames in %v of %v each, want %d", len(frames), duration, slow, want)
+	}
+	for i, f := range frames {
+		if f.steps != i+1 {
+			t.Fatalf("frame %d is after %d steps: a step is a step however long the drawing takes", i, f.steps)
+		}
+	}
+}
+
+func TestLiveQuitsRightAway(t *testing.T) {
+	frames := runLive(New(1, 2), newWorld(0), Night{}, 0)
+	if len(frames) != 1 {
+		t.Errorf("%d frames before quitting at once, want the first", len(frames))
+	}
+}
+
+func TestLiveAfterASlowStretchItDoesNotBurstToCatchUp(t *testing.T) {
+	const slowFrames = 20
+	slow := 5 * StepDuration
+	w := newWorld(time.Minute)
+	p := New(1, 2)
+	var at []time.Time
+	p.RunLive(w, Night{}, func() {
+		at = append(at, w.now)
+		if len(at) <= slowFrames {
+			w.now = w.now.Add(slow) // the drawing is slow at first...
+		}
+	})
+	for i := slowFrames + 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap < StepDuration { // ... and then it is not
+			t.Fatalf("frame %d came %v after the one before, less than a step: it rushed to catch up", i, gap)
+		}
+	}
+	if len(at) < slowFrames+10 {
+		t.Fatalf("only %d frames", len(at))
 	}
 }
