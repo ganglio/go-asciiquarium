@@ -63,7 +63,17 @@ as the badge would, in black and white.
 
 ## Build it for the badge
 
-You need [TinyGo](https://tinygo.org/getting-started/install/) (0.44 was used).
+You need [Go](https://go.dev/dl/) and [TinyGo](https://tinygo.org/getting-started/install/)
+(0.44.0 was used, with Go 1.27). TinyGo is one command:
+
+```sh
+make install-dependencies    # or: make install
+```
+
+It downloads TinyGo 0.44.0 for your computer (macOS or Linux, Intel or ARM) into `.tools/`
+in this folder, checks the download against its published SHA-256, and unpacks it. It
+needs no `sudo` and changes nothing else on the computer; delete `.tools/` to remove it.
+From then on `make` uses that copy by itself, so there is no `PATH` to set up.
 
 ```sh
 make badger       # bin/aquarium.uf2
@@ -72,7 +82,8 @@ make size         # about 100 KB of flash and 15 KB of RAM
 make check        # vet, test, build the firmware, test with TinyGo
 ```
 
-If TinyGo is not on your `PATH`: `make badger TINYGO=/path/to/tinygo`.
+To use a TinyGo of your own, put it on your `PATH` or say where it is:
+`make badger TINYGO=/path/to/tinygo`. The one in `.tools/` wins if it is there.
 
 The times are settings of the firmware, and `make` takes them for the badge:
 
