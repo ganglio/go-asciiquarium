@@ -23,6 +23,11 @@ type Options struct {
 	// Classic restricts the aquarium to the species of Asciiquarium 1.0: no
 	// newer fish and sea monster, no submarine, no jellyfish.
 	Classic bool
+
+	// Low is the mode for limited terminals: no colors, one fish that
+	// swims around freely, algae, bubbles and a single line of water
+	// surface. The fish can be fed (see DropFood).
+	Low bool
 }
 
 // Z levels. Entities with a lower Z are drawn in front of those with a higher
@@ -52,6 +57,7 @@ type Aquarium struct {
 	newFish    bool
 	newMonster bool
 	newObjects bool // submarine and jellyfish
+	low        bool
 }
 
 // New creates an aquarium that draws into a.
@@ -62,12 +68,17 @@ func New(a *anim.Animation, opts Options, rng *rand.Rand) *Aquarium {
 		newFish:    !opts.Classic,
 		newMonster: !opts.Classic,
 		newObjects: !opts.Classic,
+		low:        opts.Low,
 	}
 }
 
 // Populate fills the animation with the water, the castle, seaweed, fish and
 // one random creature. Call it again after RemoveAll to start over.
 func (q *Aquarium) Populate() {
+	if q.low {
+		q.populateLow()
+		return
+	}
 	q.addEnvironment()
 	q.addCastle()
 	q.addAllSeaweed()
@@ -158,10 +169,10 @@ func (q *Aquarium) addSeaweed() {
 	})
 }
 
-// addBubble releases an air bubble from a fish.
-func (q *Aquarium) addBubble(fish *anim.Entity) {
+// addBubble releases an air bubble from a fish that faces right or left.
+func (q *Aquarium) addBubble(fish *anim.Entity, facingRight bool) {
 	x, y, z := fish.X, fish.Y, fish.Z
-	if fish.Delta.X > 0 { // moving right: the mouth is at the right edge
+	if facingRight { // the mouth is at the right edge
 		x += float64(fish.Width())
 	}
 	y += float64(fish.Height() / 2)

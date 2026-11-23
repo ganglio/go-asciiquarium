@@ -6,7 +6,7 @@
 // http://robobunny.com/projects/asciiquarium
 //
 // Keys: q quit, r redraw (recreates every entity, picks up a new terminal
-// size), p pause.
+// size), p pause, f drop food (low-capability mode only).
 package main
 
 import (
@@ -31,6 +31,7 @@ const frameTime = 100 * time.Millisecond
 
 func main() {
 	classic := flag.Bool("c", false, `"classic" mode, only show species from Asciiquarium 1.0`)
+	low := flag.Bool("low", false, "low-capability mode: no colors, one fish that swims around, press f to feed it")
 	version := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -39,7 +40,7 @@ func main() {
 		return
 	}
 
-	if err := run(aquarium.Options{Classic: *classic}); err != nil {
+	if err := run(aquarium.Options{Classic: *classic, Low: *low}); err != nil {
 		fmt.Fprintln(os.Stderr, "asciiquarium:", err)
 		os.Exit(1)
 	}
@@ -54,7 +55,9 @@ func run(opts aquarium.Options) error {
 		return err
 	}
 	defer screen.Fini()
-	screen.SetStyle(tcell.StyleDefault.Background(tcell.ColorBlack))
+	if !opts.Low {
+		screen.SetStyle(tcell.StyleDefault.Background(tcell.ColorBlack))
+	}
 
 	// Leave the terminal in a sane state on SIGTERM/SIGHUP too.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
@@ -64,7 +67,7 @@ func run(opts aquarium.Options) error {
 	a := anim.New(width, height)
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), rand.Uint64()))
 	scene := aquarium.New(a, opts, rng)
-	canvas := tcellCanvas{screen}
+	canvas := tcellCanvas{screen: screen, mono: opts.Low}
 
 	scene.Populate()
 
@@ -115,6 +118,8 @@ func run(opts aquarium.Options) error {
 					return nil
 				case 'p':
 					paused = !paused
+				case 'f':
+					scene.DropFood()
 				case 'r':
 					screen.Sync()
 					width, height = screen.Size()
@@ -130,18 +135,25 @@ func run(opts aquarium.Options) error {
 // tcellCanvas draws an animation on a tcell screen.
 type tcellCanvas struct {
 	screen tcell.Screen
+	mono   bool // draw without colors
 }
 
 func (c tcellCanvas) Clear() { c.screen.Clear() }
 
 func (c tcellCanvas) SetCell(x, y int, r rune, col anim.Color) {
-	c.screen.SetContent(x, y, r, nil, style(col))
+	c.screen.SetContent(x, y, r, nil, style(col, c.mono))
 }
 
 // style maps an animation color to a terminal style on a black background.
 // The original draws bold colors with A_BOLD; the bright half of the ANSI
 // palette is what terminals show for that, without depending on the font.
-func style(c anim.Color) tcell.Style {
+//
+// With mono set there are no colors at all: everything is drawn in the
+// terminal's own colors.
+func style(c anim.Color, mono bool) tcell.Style {
+	if mono {
+		return tcell.StyleDefault
+	}
 	index := int(c.Hue)
 	if c.Bold {
 		index += 8

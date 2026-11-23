@@ -177,7 +177,7 @@ func TestBubblePopsAtTheWaterLine(t *testing.T) {
 	fish := anim.NewEntity(anim.Config{
 		Shape: []string{"abc\nabc\nabc"}, X: 10, Y: 12, Z: 5, Delta: anim.Delta{X: 1},
 	})
-	q.addBubble(fish)
+	q.addBubble(fish, true)
 
 	bubbles := a.EntitiesOfType("bubble")
 	if len(bubbles) != 1 {
@@ -209,7 +209,7 @@ func TestBubbleFromLeftMovingFish(t *testing.T) {
 	fish := anim.NewEntity(anim.Config{
 		Shape: []string{"abc"}, X: 10, Y: 12, Z: 5, Delta: anim.Delta{X: -1},
 	})
-	q.addBubble(fish)
+	q.addBubble(fish, false)
 	if b := a.EntitiesOfType("bubble")[0]; b.X != 10 {
 		t.Errorf("bubble x = %v, want 10", b.X)
 	}

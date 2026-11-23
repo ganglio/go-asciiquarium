@@ -72,7 +72,7 @@ func (q *Aquarium) addFishEntity(art []string) {
 
 func (q *Aquarium) fishCallback(fish *anim.Entity, a *anim.Animation) {
 	if q.irand(100) > 97 {
-		q.addBubble(fish)
+		q.addBubble(fish, fish.Delta.X > 0)
 	}
 	fish.MoveEntity(a)
 }
