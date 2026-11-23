@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-// Package aquarium is the scene of asciiquarium: water, castle, seaweed, fish
-// and the occasional ship, whale, sea monster, big fish or shark.
+// Package aquarium is the scene: a line of water surface, algae, bubbles and
+// one fish that swims around and can be fed.
 //
-// It is a port of the Perl script by Kirk Baucom (version 1.1), with ASCII art
-// by Joan Stark and the extra species by Claudio Matsuoka.
+// It descends from the Perl script asciiquarium (Kirk Baucom, version 1.1):
+// the algae and the bubbles are its algae and bubbles.
 package aquarium
 
 import (
@@ -15,79 +15,96 @@ import (
 	"go-asciiquarium/internal/anim"
 )
 
-// Version is the version of the original asciiquarium this port follows.
-const Version = "1.1"
-
-// Options select the species.
-type Options struct {
-	// Classic restricts the aquarium to the species of Asciiquarium 1.0: no
-	// newer fish and sea monster, no submarine, no jellyfish.
-	Classic bool
-
-	// Low is the mode for limited terminals: no colors, one fish that
-	// swims around freely, algae, bubbles and a single line of water
-	// surface. The fish can be fed (see DropFood).
-	Low bool
-}
-
 // Z levels. Entities with a lower Z are drawn in front of those with a higher
-// one. The water line layers sit at fixed depths so that ships, whales and
-// sea monsters appear to float between them.
+// one. The fish and the food share a Z so that they collide; bubbles go one
+// level in front of the fish; the water surface reaches back as far as the
+// algae so that bubbles collide with it.
 const (
-	zShark     = 2
-	zFishStart = 3
-	zFishEnd   = 20
-	zSeaweed   = 21
-	zCastle    = 22
+	zSurface = 2
+	zFish    = 5
+	zSeaweed = 21
 
-	zWaterGap3 = 3
-	zWaterGap2 = 5
-	zWaterGap1 = 7
+	surfaceDepth = zSeaweed - zSurface
+
+	// bubbleZ is how many levels in front of its fish a bubble goes.
+	bubbleZ = -1
 )
 
-// zWaterLine is the Z of each of the four water line segments, top row first.
-var zWaterLine = [4]float64{8, 6, 4, 2}
+// The tank. Row 0 is the water surface; the water starts on the row below.
+const (
+	surfaceRow    = 0
+	firstWaterRow = surfaceRow + 1
 
-// Aquarium populates an animation and keeps it populated: when something
-// dies, a death callback creates its replacement.
+	// percent is the scale of chances.
+	percent = 100
+
+	// terminalCellAspect is how many times taller than wide a character cell is
+	// in a terminal.
+	terminalCellAspect = 2
+)
+
+// The algae.
+const (
+	algaeSpacing     = 11 // columns of tank for each stalk
+	algaeMargin      = 1  // columns kept free of algae at each edge of the tank
+	algaeMinHeight   = 3  // rows
+	algaeExtraHeight = 4  // how many heights there are: algaeMinHeight and the next ones
+	algaeMinLife     = 8 * time.Minute
+	algaeExtraLife   = 4 * time.Minute // a stalk lives between algaeMinLife and this much more
+
+	swayFrames     = 2   // the two shapes a stalk sways between
+	swayMinSpeed   = .25 // frames per step
+	swayExtraSpeed = .05 // the sway speed is up to this much more
+)
+
+// The bubbles: they grow as they rise.
+var bubbleFrames = []string{".", "o", "O", "O", "O"}
+
+const (
+	bubbleRise   = -1 // rows per step; up is negative
+	bubbleGrowth = .1 // frames per step
+)
+
+// Options configure the aquarium.
+type Options struct {
+	// CellAspect is how many times taller than wide a character cell is. The
+	// fish needs it to measure distances: it is about 2 in a terminal and
+	// 8/6 on the e-ink screen. Zero means that of a terminal.
+	CellAspect float64
+}
+
+// Aquarium populates an animation and keeps it populated: when algae dies, a
+// death callback grows new algae.
 type Aquarium struct {
-	a   *anim.Animation
-	rng *rand.Rand
-
-	newFish    bool
-	newMonster bool
-	newObjects bool // submarine and jellyfish
-	low        bool
+	a      *anim.Animation
+	rng    *rand.Rand
+	aspect float64
+	night  bool // see SetNight
 }
 
 // New creates an aquarium that draws into a.
 func New(a *anim.Animation, opts Options, rng *rand.Rand) *Aquarium {
-	return &Aquarium{
-		a:          a,
-		rng:        rng,
-		newFish:    !opts.Classic,
-		newMonster: !opts.Classic,
-		newObjects: !opts.Classic,
-		low:        opts.Low,
+	aspect := opts.CellAspect
+	if aspect <= 0 {
+		aspect = terminalCellAspect
 	}
+	return &Aquarium{a: a, rng: rng, aspect: aspect}
 }
 
-// Populate fills the animation with the water, the castle, seaweed, fish and
-// one random creature. Call it again after RemoveAll to start over.
+// Populate fills the animation with the water surface, algae and the fish, or
+// just the algae at night. Call it again after RemoveAll to start over.
 func (q *Aquarium) Populate() {
-	if q.low {
-		q.populateLow()
-		return
+	if !q.night {
+		q.addSurface()
 	}
-	q.addEnvironment()
-	q.addCastle()
 	q.addAllSeaweed()
-	q.addAllFish()
-	q.randomObject()
+	if !q.night {
+		q.addFish()
+	}
 }
 
 // rand mimics Perl's rand(n): a float in [0, n), where rand(0) means rand(1).
-// A negative n gives a value in (n, 0], which matters on tiny terminals.
+// A negative n gives a value in (n, 0], which matters on tiny grids.
 func (q *Aquarium) rand(n float64) float64 {
 	if n == 0 {
 		n = 1
@@ -98,49 +115,24 @@ func (q *Aquarium) rand(n float64) float64 {
 // irand is Perl's int(rand(n)).
 func (q *Aquarium) irand(n int) int { return int(q.rand(float64(n))) }
 
-// randColor replaces the digits 1-9 of a color mask by random colors, one per
-// digit, so every fish gets its own palette.
-func (q *Aquarium) randColor(mask string) string {
-	// The original picks index int(rand($#colors)), which never selects the
-	// last entry ('M'). Keep that.
-	const colors = "cCrRyYbBgGmM"
-	for d := '1'; d <= '9'; d++ {
-		c := colors[q.irand(len(colors)-1)]
-		mask = strings.ReplaceAll(mask, string(d), string(c))
-	}
-	return mask
-}
+// middle is how far from the left edge of an entity its middle cell is.
+func middle(e *anim.Entity) float64 { return float64(e.Width()-1) / 2 }
 
-func (q *Aquarium) addEnvironment() {
-	segmentSize := len(waterLineSegment[0])
-	repeat := q.a.Width()/segmentSize + 1
-	for i, segment := range waterLineSegment {
-		q.a.Spawn(anim.Config{
-			Type:         "waterline",
-			Shape:        []string{strings.Repeat(segment, repeat)},
-			X:            0,
-			Y:            float64(i + 5),
-			Z:            zWaterLine[i],
-			DefaultColor: "cyan",
-			Depth:        22,
-			Physical:     true,
-		})
-	}
-}
-
-func (q *Aquarium) addCastle() {
+// addSurface draws the water surface: one line of '~' on the top row. Bubbles
+// pop when they reach it.
+func (q *Aquarium) addSurface() {
 	q.a.Spawn(anim.Config{
-		Shape:        []string{castleImage},
-		Mask:         []string{castleMask},
-		X:            float64(q.a.Width() - 32),
-		Y:            float64(q.a.Height() - 13),
-		Z:            zCastle,
-		DefaultColor: "BLACK",
+		Type:     "waterline",
+		Shape:    []string{strings.Repeat("~", q.a.Width())},
+		Y:        surfaceRow,
+		Z:        zSurface,
+		Depth:    surfaceDepth,
+		Physical: true,
 	})
 }
 
 func (q *Aquarium) addAllSeaweed() {
-	for range q.a.Width() / 15 {
+	for range q.a.Width() / algaeSpacing {
 		q.addSeaweed()
 	}
 }
@@ -148,50 +140,52 @@ func (q *Aquarium) addAllSeaweed() {
 func (q *Aquarium) respawnSeaweed(*anim.Entity, *anim.Animation) { q.addSeaweed() }
 
 func (q *Aquarium) addSeaweed() {
-	height := q.irand(4) + 3
-	// Two frames that sway: the stalk alternates between "(" and " )" per row.
-	var frames [2]strings.Builder
-	for i := 1; i <= height; i++ {
-		left := i % 2
-		frames[left].WriteString("(\n")
-		frames[1-left].WriteString(" )\n")
+	height := algaeMinHeight + q.irand(algaeExtraHeight)
+	// The stalk sways between two shapes: going down it alternates between
+	// "(" and " )", and the other shape has them the other way round.
+	var shapes [swayFrames]strings.Builder
+	for row := 1; row <= height; row++ {
+		left := row % swayFrames
+		shapes[left].WriteString("(\n")
+		shapes[(left+1)%swayFrames].WriteString(" )\n")
 	}
-	lifetime := time.Duration(q.irand(4*60)+8*60) * time.Second // 8 to 12 minutes
+	frames := make([]string, swayFrames)
+	for i := range shapes {
+		frames[i] = shapes[i].String()
+	}
+	lifetime := algaeMinLife + time.Duration(q.irand(int(algaeExtraLife/time.Second)))*time.Second
 	q.a.Spawn(anim.Config{
-		Shape:         []string{frames[0].String(), frames[1].String()},
-		X:             float64(q.irand(q.a.Width()-2) + 1),
+		Shape:         frames,
+		X:             float64(algaeMargin + q.irand(q.a.Width()-2*algaeMargin)),
 		Y:             float64(q.a.Height() - height),
 		Z:             zSeaweed,
-		Delta:         anim.Delta{Frame: q.rand(.05) + .25},
+		Delta:         anim.Delta{Frame: swayMinSpeed + q.rand(swayExtraSpeed)},
 		DieTime:       q.a.Now().Add(lifetime),
 		DeathCallback: q.respawnSeaweed,
-		DefaultColor:  "green",
 	})
 }
 
 // addBubble releases an air bubble from a fish that faces right or left.
 func (q *Aquarium) addBubble(fish *anim.Entity, facingRight bool) {
-	x, y, z := fish.X, fish.Y, fish.Z
+	x, y := fish.X, fish.Y
 	if facingRight { // the mouth is at the right edge
 		x += float64(fish.Width())
 	}
 	y += float64(fish.Height() / 2)
-	z-- // a bubble always goes in front of its fish
 	q.a.Spawn(anim.Config{
 		Type:             "bubble",
-		Shape:            []string{".", "o", "O", "O", "O"},
+		Shape:            bubbleFrames,
 		X:                x,
 		Y:                y,
-		Z:                z,
-		Delta:            anim.Delta{Y: -1, Frame: .1},
+		Z:                fish.Z + bubbleZ,
+		Delta:            anim.Delta{Y: bubbleRise, Frame: bubbleGrowth},
 		DieOffscreen:     true,
 		Physical:         true,
 		CollisionHandler: bubbleCollision,
-		DefaultColor:     "CYAN",
 	})
 }
 
-// bubbleCollision pops a bubble when it reaches the water line.
+// bubbleCollision pops a bubble when it reaches the water surface.
 func bubbleCollision(bubble *anim.Entity, _ *anim.Animation) {
 	for _, other := range bubble.Collisions() {
 		if other.Type == "waterline" {
@@ -200,35 +194,3 @@ func bubbleCollision(bubble *anim.Entity, _ *anim.Animation) {
 		}
 	}
 }
-
-// addSplat shows the remains of a fish eaten at (x, y, z).
-func (q *Aquarium) addSplat(x, y, z float64) {
-	q.a.Spawn(anim.Config{
-		Shape:        splatArt,
-		X:            x - 4,
-		Y:            y - 2,
-		Z:            z - 2,
-		DefaultColor: "RED",
-		Delta:        anim.Delta{Frame: .25},
-		Transparent:  ' ',
-		DieFrame:     new(15),
-	})
-}
-
-// randomObject adds one of the big, rare creatures. Only one is ever on
-// screen: each one adds the next when it dies.
-func (q *Aquarium) randomObject() {
-	objects := []func(){
-		q.addShip,
-		q.addWhale,
-		q.addMonster,
-		q.addBigFish,
-		q.addShark,
-	}
-	if q.newObjects {
-		objects = append(objects, q.addSubmarine, q.addJellyfish)
-	}
-	objects[q.irand(len(objects))]()
-}
-
-func (q *Aquarium) respawnRandomObject(*anim.Entity, *anim.Animation) { q.randomObject() }

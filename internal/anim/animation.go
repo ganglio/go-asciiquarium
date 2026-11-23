@@ -2,9 +2,9 @@
 
 // Package anim is a small ASCII sprite animation engine. It is a Go port of
 // the part of Perl's Term::Animation (Kirk Baucom) that asciiquarium uses:
-// entities with frames, colors, depth ordering, collision detection and the
+// entities with frames, depth ordering, collision detection and the
 // different ways an entity can die. Drawing goes to a Canvas, so the engine
-// knows nothing about terminals.
+// knows nothing about terminals or e-ink screens.
 package anim
 
 import (
@@ -13,15 +13,16 @@ import (
 	"time"
 )
 
-// Canvas is what an Animation draws on.
+// Canvas is what an Animation draws on: a grid of character cells.
 type Canvas interface {
 	Clear()
-	SetCell(x, y int, r rune, c Color)
+	SetCell(x, y int, r rune)
 }
 
-// Animation owns the entities and advances them frame by frame.
+// Animation owns the entities and advances them step by step.
 type Animation struct {
-	// Now is the clock used for DieTime. It can be replaced in tests.
+	// Now is the clock used for DieTime. It can be replaced, for instance to
+	// make time pass only while the animation runs.
 	Now func() time.Time
 
 	width, height int
@@ -29,12 +30,12 @@ type Animation struct {
 	queue         []*Entity // entities waiting to be removed
 }
 
-// New creates an empty animation for a screen of the given size.
+// New creates an empty animation for a grid of the given size.
 func New(width, height int) *Animation {
 	return &Animation{Now: time.Now, width: width, height: height}
 }
 
-// Width and Height are the size of the animation area.
+// Width and Height are the size of the animation area in cells.
 func (a *Animation) Width() int  { return a.width }
 func (a *Animation) Height() int { return a.height }
 
@@ -53,12 +54,22 @@ func (a *Animation) Add(e *Entity) *Entity {
 func (a *Animation) Spawn(cfg Config) *Entity { return a.Add(NewEntity(cfg)) }
 
 // Delete schedules an entity for removal. Its death callback runs at the end
-// of the frame. Deleting an entity that is already gone, or that is already
+// of the step. Deleting an entity that is already gone, or that is already
 // scheduled, is harmless.
 func (a *Animation) Delete(e *Entity) {
 	if e.anim == a {
 		a.queue = append(a.queue, e)
 	}
+}
+
+// Remove takes an entity out of the animation at once, without running its
+// death callback. Unlike Delete it is gone before the next Draw.
+func (a *Animation) Remove(e *Entity) {
+	if e.anim != a {
+		return
+	}
+	e.anim = nil
+	a.entities = slices.DeleteFunc(a.entities, func(other *Entity) bool { return other == e })
 }
 
 // RemoveAll drops every entity without running any death callback.
@@ -84,8 +95,8 @@ func (a *Animation) EntitiesOfType(typ string) []*Entity {
 	return out
 }
 
-// Animate runs one animation cycle: callbacks, collision detection and
-// handlers, then removal of dead entities. It does not draw.
+// Animate runs one step: callbacks, collision detection and handlers, then
+// removal of dead entities. It does not draw.
 func (a *Animation) Animate() {
 	a.runCallbacks()
 	a.handleCollisions()
@@ -93,21 +104,13 @@ func (a *Animation) Animate() {
 }
 
 // runCallbacks applies the automatic death rules and runs the callback of
-// every entity. Entities created along the way are not run until next frame.
+// every entity. Entities created along the way are not run until next step.
 func (a *Animation) runCallbacks() {
 	now := a.Now().Unix()
 	for _, e := range slices.Clone(a.entities) {
 		if !e.DieTime.IsZero() && e.DieTime.Unix() <= now {
 			a.Delete(e)
 			continue
-		}
-		if e.dieFrame != nil {
-			left := *e.dieFrame
-			*e.dieFrame--
-			if left <= 0 {
-				a.Delete(e)
-				continue
-			}
 		}
 		if e.DieOffscreen && a.offscreen(e) {
 			a.Delete(e)
@@ -121,7 +124,7 @@ func (a *Animation) runCallbacks() {
 	}
 }
 
-// offscreen reports whether an entity is entirely outside the screen.
+// offscreen reports whether an entity is entirely outside the grid.
 func (a *Animation) offscreen(e *Entity) bool {
 	return e.X >= float64(a.width) || e.Y >= float64(a.height) ||
 		e.X < float64(-e.width) || e.Y < float64(-e.height)
@@ -192,21 +195,17 @@ func (a *Animation) Draw(c Canvas) {
 }
 
 func (a *Animation) draw(c Canvas, e *Entity) {
-	f := e.Frame()
 	w, h := float64(a.width), float64(a.height)
-	for i, row := range e.frames[f] {
+	for i, row := range e.frames[e.Frame()] {
 		y := e.Y + float64(i)
 		for j, ch := range row {
-			if ch == e.Transparent {
-				continue
-			}
 			x := e.X + float64(j)
 			// Cells are placed by truncating the float position, but the
-			// bounds are checked before that, as Term::Animation does.
+			// bounds are checked before that.
 			if x < 0 || y < 0 || x >= w || y >= h {
 				continue
 			}
-			c.SetCell(int(x), int(y), ch, e.colors[f][i][j])
+			c.SetCell(int(x), int(y), ch)
 		}
 	}
 }

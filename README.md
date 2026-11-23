@@ -1,113 +1,257 @@
 # go-asciiquarium
 
-An aquarium/sea animation in ASCII art for your terminal: a Go port of
-[asciiquarium](http://robobunny.com/projects/asciiquarium) 1.1 by Kirk Baucom
-([source](https://github.com/cmatsuoka/asciiquarium)).
+A tiny virtual aquarium for the [Pimoroni Badger 2350](https://shop.pimoroni.com/products/badger-2350),
+an e-ink badge with a battery, written in Go for [TinyGo](https://tinygo.org).
 
-Fish swim, bubbles rise, seaweed sways, and now and then a ship, a whale, a
-sea monster, a big fish, a shark, a yellow submarine or a jellyfish passes by.
-Sharks eat small fish.
+The tank is ASCII art: a line of waves on top, algae at the bottom, and one fish,
+`<o)))><`, that turns around by flipping to its mirror image `><(((o>`.
 
-## Run
-
-```sh
-go run .          # or: go build && ./go-asciiquarium
-go run . -c       # "classic" mode: only the species of Asciiquarium 1.0
-                  # (no newer fish and monster, no submarine, no jellyfish)
-go run . -low     # low-capability mode: no colors, one fish, see below
-go run . -version
+```
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    *   **
+                      *  *
+        ><(((o>
+      )                               ))
+     (        )                       ((
 ```
 
-While running:
+The badge sleeps, and every minute it wakes up, lets the tank live for that long,
+and shows it: the fish is somewhere else, the algae has swayed. Press button A and
+5 to 10 pellets (`*`) drop from the middle of the tank, each at its own speed. The
+fish swims to the closest one and eats whatever it touches; pellets that reach the
+bottom stay there for it to eat. The screen refreshes as fast as it can while that
+goes on and for half a minute more, and then it is back to one picture a minute.
+At night, say from 22:00 to 07:00 by the badge's clock, the tank sleeps: the fish
+is gone, the picture is the negative of the day's, and there is only one every ten
+minutes, of the algae and a few bubbles slowly rising; see [Night](#night). All
+these times are settings, not fixed.
 
-| key | action                                               |
-| --- | ---------------------------------------------------- |
-| `q` | quit (so does Ctrl-C)                                |
-| `r` | redraw: recreates everything and picks up a new terminal size |
-| `p` | pause / resume                                       |
-| `f` | drop food into the tank (low-capability mode only)   |
+It also runs on a computer, for debugging, with exactly the same logic.
 
-Unlike the Perl original it needs no Perl, Curses or CPAN modules, just a
-terminal. It uses [tcell](https://github.com/gdamore/tcell).
+> **Status: untested on a badge.** Everything that can be checked without one
+> is: the tests pass, also with TinyGo's compiler and runtime, and the firmware
+> builds. But the display driver and the pin wiring have never run on real
+> hardware. Read [First flash](#first-flash) before you trust it.
 
-## How it is put together
+## Try it on your computer
 
-| path                | what                                                        |
-| ------------------- | ----------------------------------------------------------- |
-| `main.go`           | command line, terminal setup, key handling, 10 frames/second |
-| `internal/anim`     | the animation engine: a port of the part of Perl's `Term::Animation` that asciiquarium uses (sprites with frames and color masks, depth ordering, collisions, the ways an entity can die). It draws to a `Canvas` interface and knows nothing about terminals. |
-| `internal/aquarium` | the scene: the Go counterpart of the script's `add_*` functions. `art.go` holds the ASCII art. |
+```sh
+make run                          # f feeds, n/d skip the clock to night/day, r new tank, q quits
+make run ARGS="-seed 42"          # the same seed always gives the same tank
+make run ARGS="-refresh 0"        # don't simulate the slow e-ink refresh
+make run ARGS="-idle 3s -tail 5s" # a faster pace, to watch it without waiting
+make run ARGS="-idle 3s -night-interval 5s"   # press n, and see it fall asleep
+make run ARGS="-time 21:59:30 -night 22:00-07:00"   # the clock says what you want
+make snapshot ARGS="-feed -steps 1"   # draw the badge's screen to bin/snapshot.png
+make snapshot ARGS="-asleep -steps 40"  # ... as it is at night, 40 pictures in
+```
 
-## Low-capability mode
+The terminal shows the 44x22 grid of characters, at the same pace as the badge
+(`-idle` and `-tail` change it). The status line says which phase it is in, and what
+the badge's screen would do: pictures shown, pictures skipped because nothing had
+changed, cleanings, and refreshes. `make snapshot` draws the real 264x176 pixels
+as the badge would, in black and white.
 
-`-low` is a bare-bones aquarium for limited terminals (not part of the
-original). It uses no colors at all, only the terminal's own. The scene is
-one line of water surface (`~`) at the top, the algae and bubbles of the
-normal aquarium, and a single fish, `<º(((((()=<`.
+## Build it for the badge
 
-The fish swims around the whole tank, not just from side to side, and turns
-around instantly by flipping to its mirror image `>=())))))º>`, even in the
-middle of a swim. Now and then it changes its mind and heads somewhere else.
+You need [TinyGo](https://tinygo.org/getting-started/install/) (0.44 was used).
 
-Press `f` to feed it. Each press drops 5 to 10 pellets (`*`) from the middle
-of the tank with a random spread. Every pellet sinks slowly at its own speed
-and, once at the bottom, stays there. The fish swims to the closest pellet
-and eats whatever it touches, also on the bottom. The tank holds at most 100
-pellets. `f` does nothing in the normal aquarium.
+```sh
+make badger       # bin/aquarium.uf2
+make flash        # build and copy it to the badge
+make size         # about 100 KB of flash and 15 KB of RAM
+make check        # vet, test, build the firmware, test with TinyGo
+```
 
-## Beyond the original script
+If TinyGo is not on your `PATH`: `make badger TINYGO=/path/to/tinygo`.
 
-Two creatures come from open pull requests of the
-[original repository](https://github.com/cmatsuoka/asciiquarium), which has not
-merged them:
+The times are settings of the firmware, and `make` takes them for the badge:
 
-- the **yellow submarine** ([#6](https://github.com/cmatsuoka/asciiquarium/pull/6),
-  Daniel Riechers): it cruises to the middle of the screen, raises its
-  periscope, looks both ways, lowers it and carries on;
-- the **jellyfish** ([#25](https://github.com/cmatsuoka/asciiquarium/pull/25),
-  jkstill): it drifts sideways while slowly sinking.
+```sh
+make flash IDLE=2m NIGHT=23:00-06:30 NIGHT_INTERVAL=5m TAIL=45s
+```
 
-Like the newer fish and sea monster they are left out in classic mode (`-c`).
+The build also stamps the firmware with the time it was built. That is how the
+badge's clock gets its time: see [The clock](#the-clock).
 
-## Differences from the Perl script
+To flash, put the badge in boot mode: Pimoroni's README names a BOOT button (far
+left on the back) and a RESET button next to it. Hold BOOT, tap RESET, and a drive
+appears; `make flash` copies the firmware to it, or drag `bin/aquarium.uf2` there
+yourself. Check [Pimoroni's page](https://shop.pimoroni.com/products/badger-2350)
+if that is not how your badge does it.
 
-The behavior is meant to be the same. What differs:
+## How it works
 
-- **Terminal library:** tcell instead of Curses, so it also works on Windows.
-- **Frame timing:** a steady 10 frames per second. In the original every
-  keypress also advanced a frame.
-- **Bold colors** are drawn with the bright half of the ANSI palette instead
-  of the bold attribute, so they look the same whatever the terminal font.
-- **Resizing:** as in the original, a resized terminal is ignored until you
-  press `r`.
-- **Update order:** entities are updated in creation order; Perl visited them
-  in random hash order. This only affects entities at the same depth.
-- Not ported because the original never used them: the debug log, the unused
-  signal handler and `center`.
+| path | what |
+| --- | --- |
+| `cmd/badger` | the firmware: pins, SPI, the button, and the main loop (TinyGo only) |
+| `cmd/aquarium` | the same thing on a computer: terminal, simulated screen, PNG snapshots |
+| `internal/app` | what both run: the tank and the loop that gives it its pace |
+| `internal/aquarium` | the scene: surface, algae, bubbles, fish, food |
+| `internal/flip` | which characters turn into each other when mirrored (`<` and `>`...), used by the fish and by the font |
+| `internal/anim` | a small ASCII animation engine (a port of the part of Perl's `Term::Animation` the original aquarium used) |
+| `internal/epd` | the e-ink side: a 1-bit frame, the font, the SSD1680 driver, and when to clean |
+
+**Drawing.** The scene is a grid of characters, 44 columns by 22 rows. Each
+character is drawn as a 6x8 pixel glyph from a small built-in font
+(`internal/epd/font.go`). The glyphs are bitmaps of those ASCII characters, so
+the picture is the ASCII art, not a different style.
+
+**Changing the fish.** It is one string, `fishFacingLeft` in `internal/aquarium/fish.go`;
+the other way round is computed by mirroring it (`<>()[]{}/\` turn around), and its
+width is whatever the string is, nowhere written down. The
+font has the characters the scene draws and the brackets a fish can be made of
+(`<>()[]{}`). A fish made of anything else would show as an empty box on the
+badge: `make test` fails in that case and names the missing characters. Add them to
+`internal/epd/font.go`.
+
+Characters that turn into each other when mirrored are listed once, in
+`internal/flip` (`<>`, `()`, `[]`, `{}`). The font draws only the first of each
+pair; the second is computed as its mirror image, so it can never disagree with
+it. To add a pair, add it to `flip.Pairs` and draw its first character.
+
+**Pace.** `app.Run` is the loop, and the badge and the computer both run it; each
+only says what time it is and how to wait for "up to this long, or until the button
+is pressed" (`app.Env`). It has two speeds:
+
+- *Idle*: every `Idle` (a minute) the tank is let live for that long, as much as it
+  would in the real world, and shown. The fish ends up somewhere else, the algae
+  sways, and a stalk that is old enough dies and grows back somewhere new.
+- *Burst*: after a press, and while there is food in the tank, pictures come back to
+  back, as fast as the screen refreshes. Each moves the tank on by 6 steps of a
+  tenth of a second (`app.StepsPerUpdate`). After the last pellet is eaten it goes
+  on for `Tail` (30 s) more, then shows one last picture (the screen cleans itself
+  then if it needs to) and goes back to idle. Feeding again extends it.
+
+A picture identical to what is on the screen is not sent at all. A feeding takes
+only a few pictures with food in the tank, since the fish is fast and the pellets
+start close together; the rest of the burst is the tail.
+
+**Ghosting.** A fast e-ink refresh leaves a faint trace of the previous picture.
+The display counts the pictures it has shown and, every 10 (`epd.Config.CleanEvery`),
+flashes the screen black and white to clean it. It also cleans at the end of a
+feeding (`SettleMin`), so the picture that stays on the screen for hours is a clean
+one. At power-up it cleans first, as nobody knows what was there before. Cleaning
+uses the same waveform as drawing, so no new waveform is involved.
+
+**Sleep.** Between pictures the badge polls button A every 20 ms and the processor
+idles in between. That is *light* sleep: RAM is kept, so the tank is where it was,
+and waking is instant. The wake-up for the next picture is just a timer of the chip,
+so the real-time clock is not needed for it. The battery drain of this has not been
+measured.
+
+The badge also has a real-time clock chip, a PCF85063A on the I2C bus (GPIO 4 and 5,
+address 0x51, powered through `POWER_EN`). It keeps the date and time on a crystal of
+its own, and tells the tank when night begins and ends: see [The clock](#the-clock).
+It could also pull its INT line low (wired to GPIO 13) at a set time, after a
+countdown, or every half minute, to wake the main chip from its deep sleep, as the
+main chip's own always-on timer can, which is what Pimoroni's timed sleep uses. That
+deep sleep draws far less (about 167 µA, by one user's measurement on the Pimoroni
+forum) but TinyGo has no support for it, and waking from it is a reboot that loses
+the tank. It is the obvious next step if the battery does not last (see below).
+
+**Pictures per day.** One a minute is 1,440 a day, about half a million a year, plus
+the black-and-white flashes of the cleanings (every 10 pictures). Check what the
+panel is rated for, and the battery life, before settling on `Idle`.
+
+## Night
+
+Between two times of day, by default 22:00 to 07:00, the tank sleeps. The night can go
+through midnight, as this one does, or fall inside a day (01:00-05:00).
+
+- **Going to sleep.** At the first look after the night begins the tank shows one last
+  picture, so that the screen is clean for the night, and goes to sleep.
+- **The picture at night** is the *negative* of the day's: white on black. The fish is
+  gone, and so are the water surface and the food. What is left is the algae, swaying,
+  and bubbles that start at the bottom now and then and rise.
+- **Slowly.** There is one picture every `Interval` (ten minutes). In each the algae
+  has swayed once and every bubble has risen one row, and grown a little, to be full
+  size at the top, where it leaves. A bubble takes a bit over three hours to cross the
+  tank.
+- **Waking up.** When the night ends, to the second, the tank shows the day again, with
+  a fish somewhere in the water.
+- **The button** wakes the tank for a feeding, as a peek at the day. When the burst is
+  over it goes back to sleep, if it is still night.
+
+Without a time on the clock the tank never sleeps.
+
+### The clock
+
+The badge has a real-time clock, which keeps the time on a crystal of its own while
+everything else sleeps. It is not set to anything out of the box, and it has no way to
+find out: the firmware has no Wi-Fi. So `make` stamps the firmware with the time of the
+build, on the wall of the computer, and at start-up the badge sets its clock to it if
+the clock lost its power (it says so itself) or is behind. In practice: flash the
+badge, and it knows the time to within a few minutes.
+
+Things to know: the time is *local time*, with no time zone and no summer time, so
+reflash when the clocks change; like any crystal clock it drifts, by a few seconds a
+month, so reflash now and then too; and a badge flashed without `make` has no time to
+set. The registers and the way to set the clock are those of the chip's datasheet, as
+the Linux kernel's driver uses them (`internal/rtc`).
+
+## First flash
+
+Things that follow Pimoroni's firmware but that nobody has run from Go. If the
+screen stays blank or shows rubbish, look here first.
+
+- **Power pin.** `POWER_EN` (GPIO 27) is driven high at start-up, as Pimoroni's
+  firmware does. Its header calls it "I2C power for the RTC"; TinyGo's board file
+  guessed it powers the display. If the screen stays blank, this is a suspect.
+- **BUSY.** The screen's BUSY pin (GPIO 16) is read as *high means busy*, as in
+  Pimoroni's driver. SPI is set up without a receive pin because GPIO 16 is both.
+- **Buttons.** Pulled up and read as pressed when *low*, as in Pimoroni's init.
+- **Orientation.** The picture's top left is the badge's top left, as in
+  Pimoroni's framebuffer. If it is upside down or mirrored, the data entry mode
+  (`regEntryMode` in `internal/epd/driver.go`) is the place.
+- **Timing.** SPI runs at 4 MHz, mode 0. Refreshes should take about a second.
+  How often to clean (`CleanEvery`, `SettleMin`) and how many steps go into a
+  picture (`StepsPerUpdate`) are guesses to tune by eye.
+- **The clock.** It is read and set over I2C0 at 400 kHz after `POWER_EN` has been
+  high for half a second, as Pimoroni's firmware does it, and nobody has run it from
+  Go. If the badge never sleeps at night, the clock could not be read: a message
+  on the serial port says so.
+- **Button during a refresh.** A press while the screen is refreshing is seen
+  after it, if the button is still down; a short press can be missed.
+
+## Not done yet
+
+- **Partial refresh**, to update faster than once a second. Pimoroni's driver has
+  none, so the waveform has to be worked out on the real panel.
+- **Deep sleep**, woken by the main chip's timer or by the real-time clock, with the
+  tank saved across the reboot.
+- **Setting the clock** from something better than the build time (Wi-Fi, or the
+  buttons).
+- **Showing the time**, from the real-time clock.
+- The other four buttons, the LEDs on the back, the battery gauge.
+
+## Conventions
+
+No magic numbers: a number that means something has a name and a comment where it
+is defined (`algaeMinHeight`, `bubblePercent`, `lutSize`, `spiFrequency`...), and
+nothing is written down twice if it can be worked out from something else, like the
+fish's width from the fish. Only 0, 1, "half" and the "+1" of a count are left bare.
 
 ## Tests
 
 ```sh
-go test ./...          # about 15 s, mostly a long randomized run
-go test -short ./...   # a shorter one
+make test         # about 5 s
+make test-tinygo  # the same tests with TinyGo's compiler and runtime
 ```
 
-Besides unit tests of the engine and the scene, the suite runs the whole
-aquarium for the equivalent of 20 minutes on screens from 200x60 down to
-5x3, checking that nothing panics, nothing is drawn outside the screen and
-the scene never runs out of creatures.
-
-The ASCII art was extracted from the Perl script with Perl's own parser and
-compared byte for byte with the Go strings.
+The display driver is tested against a recording transport: the exact sequence
+of commands, the layout and polarity of the pixels, the waveform, and the rules
+for skipping and cleaning. The scene runs for the equivalent of 10 minutes on
+grids from 200x60 down to 5x2, checking that nothing panics and nothing is drawn
+outside the grid.
 
 ## Credits and license
 
-- Original program: Kirk Baucom, 2003.
-- Yellow submarine: Daniel Riechers. Jellyfish: jkstill.
-- ASCII art: Joan Stark.
-- Extra species (backported from the Asciiquarium Android live wallpaper):
-  Claudio Matsuoka.
+The algae, the bubbles and the animation engine come from
+[asciiquarium](http://robobunny.com/projects/asciiquarium) by Kirk Baucom
+([source](https://github.com/cmatsuoka/asciiquarium)). This is a derivative work
+and is distributed under the same terms, the GNU General Public License,
+version 2 or (at your option) any later version. See [LICENSE](LICENSE).
 
-This is a derivative work of the original and is distributed under the same
-terms, the GNU General Public License, version 2 or (at your option) any
-later version. See [LICENSE](LICENSE).
+The display driver is transcribed from Pimoroni's Badger 2350 firmware (MIT). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -12,22 +12,12 @@ import (
 
 // grid is a Canvas that keeps what was drawn.
 type grid struct {
-	w, h   int
-	cells  map[[2]int]rune
-	colors map[[2]int]Color
+	w, h  int
+	cells map[[2]int]rune
 }
 
-func newGrid(w, h int) *grid { return &grid{w: w, h: h} }
-
-func (g *grid) Clear() {
-	g.cells = map[[2]int]rune{}
-	g.colors = map[[2]int]Color{}
-}
-
-func (g *grid) SetCell(x, y int, r rune, c Color) {
-	g.cells[[2]int{x, y}] = r
-	g.colors[[2]int{x, y}] = c
-}
+func (g *grid) Clear()                    { g.cells = map[[2]int]rune{} }
+func (g *grid) SetCell(x, y int, ch rune) { g.cells[[2]int{x, y}] = ch }
 
 // String renders the grid, '.' for empty cells.
 func (g *grid) String() string {
@@ -46,7 +36,7 @@ func (g *grid) String() string {
 }
 
 func draw(a *Animation) *grid {
-	g := newGrid(a.Width(), a.Height())
+	g := &grid{w: a.Width(), h: a.Height()}
 	a.Draw(g)
 	return g
 }
@@ -64,44 +54,25 @@ func TestLines(t *testing.T) {
 		{"a\n\nb\n", []string{"a", "", "b"}},
 	}
 	for _, tt := range tests {
-		if got := Lines(tt.in); !slices.Equal(got, tt.want) {
-			t.Errorf("Lines(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestParseColor(t *testing.T) {
-	tests := []struct {
-		in   string
-		want Color
-		ok   bool
-	}{
-		{"c", Color{Cyan, false}, true},
-		{"C", Color{Cyan, true}, true},
-		{"cyan", Color{Cyan, false}, true},
-		{"CYAN", Color{Cyan, true}, true},
-		{"k", Color{Black, false}, true},
-		{"BLACK", Color{Black, true}, true},
-		{"w", Color{White, false}, true},
-		{"Blue", Color{}, false},
-		{"x", Color{}, false},
-		{"7", Color{}, false},
-		{"", Color{}, false},
-	}
-	for _, tt := range tests {
-		got, ok := ParseColor(tt.in)
-		if got != tt.want || ok != tt.ok {
-			t.Errorf("ParseColor(%q) = %v, %v; want %v, %v", tt.in, got, ok, tt.want, tt.ok)
+		if got := lines(tt.in); !slices.Equal(got, tt.want) {
+			t.Errorf("lines(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
 
 func TestShapeSize(t *testing.T) {
-	// The leading newline is stripped, trailing blank lines don't count, and
-	// the size is the maximum over all frames.
-	e := NewEntity(Config{Shape: []string{"\nab\nc\n\n", "\nxyz\n"}})
+	// Trailing blank lines don't count and the size is the maximum over all
+	// frames.
+	e := NewEntity(Config{Shape: []string{"ab\nc\n\n", "xyz\n"}})
 	if e.Width() != 3 || e.Height() != 2 {
 		t.Errorf("size = %dx%d, want 3x2", e.Width(), e.Height())
+	}
+}
+
+func TestMultiByteCharactersAreOneCell(t *testing.T) {
+	e := NewEntity(Config{Shape: []string{"<º(("}})
+	if e.Width() != 4 {
+		t.Errorf("width = %d, want 4", e.Width())
 	}
 }
 
@@ -113,30 +84,11 @@ func TestDefaultShapeIsAsterisk(t *testing.T) {
 	}
 }
 
-func TestAutoTrans(t *testing.T) {
-	a := New(10, 2)
-	a.Spawn(Config{Shape: []string{"#########\n#########\n"}, Z: 5})
-	// Leading whitespace is transparent; the space inside is not.
-	a.Spawn(Config{Shape: []string{"\n   a b\n"}, AutoTrans: true, Z: 1})
-	want := "###a b###.\n" + "#########.\n"
-	if got := draw(a).String(); got != want {
-		t.Errorf("got\n%swant\n%s", got, want)
-	}
-}
-
-func TestExplicitTransparentCharacter(t *testing.T) {
+func TestSpacesAreOpaque(t *testing.T) {
 	a := New(5, 1)
 	a.Spawn(Config{Shape: []string{"#####"}, Z: 5})
-	// '?' is the default transparent character, even without AutoTrans.
-	a.Spawn(Config{Shape: []string{"a?b"}, Z: 1})
-	if got := draw(a).String(); got != "a#b##\n" {
-		t.Errorf("got %q", got)
-	}
-
-	a.RemoveAll()
-	a.Spawn(Config{Shape: []string{"#####"}, Z: 5})
-	a.Spawn(Config{Shape: []string{"a?b"}, Z: 1, Transparent: 'b'})
-	if got := draw(a).String(); got != "a?###\n" {
+	a.Spawn(Config{Shape: []string{" a "}, Z: 1})
+	if got := draw(a).String(); got != " a ##\n" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -148,6 +100,15 @@ func TestLowerZIsDrawnOnTop(t *testing.T) {
 	a.Spawn(Config{Shape: []string{"C"}, Z: 0})
 	if got := draw(a).String(); got != "C..\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestEqualZKeepsCreationOrder(t *testing.T) {
+	a := New(3, 1)
+	a.Spawn(Config{Shape: []string{"A"}, Z: 1})
+	a.Spawn(Config{Shape: []string{"B"}, Z: 1})
+	if got := draw(a).String(); got != "B..\n" {
+		t.Errorf("got %q: the later entity should be on top", got)
 	}
 }
 
@@ -177,56 +138,6 @@ func TestDrawClipsAndTruncates(t *testing.T) {
 	}
 }
 
-func TestColors(t *testing.T) {
-	a := New(4, 2)
-	a.Spawn(Config{
-		Shape:        []string{"\nabcd\nefgh\n"},
-		Mask:         []string{"\nrR b\nG\n"},
-		DefaultColor: "yellow",
-	})
-	g := draw(a)
-	want := map[[2]int]Color{
-		{0, 0}: {Red, false},
-		{1, 0}: {Red, true},
-		{2, 0}: {Yellow, false}, // space in the mask: default
-		{3, 0}: {Blue, false},
-		{0, 1}: {Green, true},
-		{1, 1}: {Yellow, false}, // mask row too short: default
-	}
-	for pos, c := range want {
-		if g.colors[pos] != c {
-			t.Errorf("color at %v = %v, want %v", pos, g.colors[pos], c)
-		}
-	}
-}
-
-func TestMaskIsRepeatedForEveryFrame(t *testing.T) {
-	a := New(2, 1)
-	e := a.Spawn(Config{Shape: []string{"a", "b", "c"}, Mask: []string{"r"}, Delta: Delta{Frame: 1}})
-	for range 3 {
-		if c := draw(a).colors[[2]int{0, 0}]; c != (Color{Red, false}) {
-			t.Errorf("frame %d color = %v", e.Frame(), c)
-		}
-		a.Animate()
-	}
-}
-
-func TestInvalidColorsPanic(t *testing.T) {
-	for _, cfg := range []Config{
-		{DefaultColor: "Blue"},
-		{Shape: []string{"a"}, Mask: []string{"z"}},
-	} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("NewEntity(%+v) did not panic", cfg)
-				}
-			}()
-			NewEntity(cfg)
-		}()
-	}
-}
-
 func TestMoveEntity(t *testing.T) {
 	a := New(80, 24)
 	e := a.Spawn(Config{Delta: Delta{X: 2, Y: -1, Z: 0.5}, X: 10, Y: 10, Z: 3})
@@ -245,7 +156,7 @@ func TestFrameStepping(t *testing.T) {
 		got = append(got, e.Frame())
 		a.Animate()
 	}
-	// Each frame lasts four ticks and the sequence wraps around.
+	// Each frame lasts four steps and the sequence wraps around.
 	want := []int{0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("frames = %v, want %v", got, want)
@@ -265,6 +176,21 @@ func TestWholeFrameSteps(t *testing.T) {
 	}
 }
 
+func TestSetFrame(t *testing.T) {
+	a := New(10, 1)
+	e := a.Spawn(Config{Shape: []string{"a", "b", "c"}})
+	for in, want := range map[int]int{0: 0, 2: 2, 3: 0, 7: 1, -1: 2} {
+		e.SetFrame(in)
+		if e.Frame() != want {
+			t.Errorf("SetFrame(%d): frame %d, want %d", in, e.Frame(), want)
+		}
+	}
+	e.SetFrame(1)
+	if got := draw(a).String(); got != "b.........\n" {
+		t.Errorf("drew %q", got)
+	}
+}
+
 func TestCustomCallbackReplacesDefaultMovement(t *testing.T) {
 	a := New(10, 1)
 	calls := 0
@@ -278,35 +204,6 @@ func TestCustomCallbackReplacesDefaultMovement(t *testing.T) {
 	a.Animate()
 	if e.X != 1 {
 		t.Errorf("x = %v", e.X)
-	}
-}
-
-func TestDieFrame(t *testing.T) {
-	a := New(10, 1)
-	a.Spawn(Config{DieFrame: new(2)})
-	var alive []int
-	for range 4 {
-		a.Animate()
-		alive = append(alive, a.EntityCount())
-	}
-	// With DieFrame 2 the entity survives two cycles and is removed on the third.
-	if want := []int{1, 1, 0, 0}; !reflect.DeepEqual(alive, want) {
-		t.Errorf("entity count per frame = %v, want %v", alive, want)
-	}
-}
-
-func TestDieFrameDoesNotShareConfigState(t *testing.T) {
-	a := New(10, 1)
-	cfg := Config{DieFrame: new(1)}
-	a.Spawn(cfg)
-	a.Spawn(cfg)
-	a.Animate()
-	a.Animate()
-	if a.EntityCount() != 0 {
-		t.Errorf("both entities should have died, %d left", a.EntityCount())
-	}
-	if *cfg.DieFrame != 1 {
-		t.Errorf("config was modified: %d", *cfg.DieFrame)
 	}
 }
 
@@ -389,19 +286,18 @@ func TestDeathCallbackCanDeleteOthers(t *testing.T) {
 	a := New(10, 1)
 	a.Spawn(Config{Type: "follower"})
 	a.Spawn(Config{Type: "follower"})
-	leader := a.Spawn(Config{DieFrame: new(0), DeathCallback: func(_ *Entity, a *Animation) {
+	a.Spawn(Config{DieOffscreen: true, X: 50, DeathCallback: func(_ *Entity, a *Animation) {
 		for _, f := range a.EntitiesOfType("follower") {
 			a.Delete(f)
 		}
 	}})
-	_ = leader
 	a.Animate()
 	if a.EntityCount() != 0 {
 		t.Errorf("%d entities left", a.EntityCount())
 	}
 }
 
-func TestNewEntitiesFirstRunNextFrame(t *testing.T) {
+func TestNewEntitiesFirstRunNextStep(t *testing.T) {
 	a := New(10, 1)
 	var child *Entity
 	a.Spawn(Config{Callback: func(_ *Entity, a *Animation) {
@@ -411,7 +307,7 @@ func TestNewEntitiesFirstRunNextFrame(t *testing.T) {
 	}})
 	a.Animate()
 	if child.X != 0 {
-		t.Errorf("child moved in the frame it was created: x=%v", child.X)
+		t.Errorf("child moved in the step it was created: x=%v", child.X)
 	}
 	a.Animate()
 	if child.X != 1 {
@@ -478,7 +374,7 @@ func TestNonPhysicalEntitiesDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestCollisionsAreResetEveryFrame(t *testing.T) {
+func TestCollisionsAreResetEveryStep(t *testing.T) {
 	a := New(10, 1)
 	var seen []int
 	handler := func(e *Entity, _ *Animation) { seen = append(seen, len(e.Collisions())) }
@@ -511,17 +407,32 @@ func TestCollisionHandlerCanKillAndSpawn(t *testing.T) {
 	}
 }
 
-func TestSetFrame(t *testing.T) {
+func TestRemoveIsImmediateAndSkipsTheDeathCallback(t *testing.T) {
 	a := New(10, 1)
-	e := a.Spawn(Config{Shape: []string{"a", "b", "c"}})
-	for in, want := range map[int]int{0: 0, 2: 2, 3: 0, 7: 1, -1: 2} {
-		e.SetFrame(in)
-		if e.Frame() != want {
-			t.Errorf("SetFrame(%d): frame %d, want %d", in, e.Frame(), want)
-		}
+	called := false
+	e := a.Spawn(Config{Shape: []string{"x"}, DeathCallback: func(*Entity, *Animation) { called = true }})
+	a.Spawn(Config{Shape: []string{"y"}, X: 1})
+	a.Remove(e)
+	if got := draw(a).String(); got != ".y........\n" {
+		t.Errorf("the removed entity was still drawn: %q", got)
 	}
-	e.SetFrame(1)
-	if got := draw(a).String(); got != "b.........\n" {
-		t.Errorf("drew %q", got)
+	a.Remove(e) // harmless
+	a.Animate()
+	if called || a.EntityCount() != 1 {
+		t.Errorf("called=%v count=%d", called, a.EntityCount())
+	}
+	e.Kill() // harmless too
+	a.Animate()
+}
+
+func TestRemoveAfterDeleteDoesNotRunTheDeathCallback(t *testing.T) {
+	a := New(10, 1)
+	called := false
+	e := a.Spawn(Config{DeathCallback: func(*Entity, *Animation) { called = true }})
+	a.Delete(e)
+	a.Remove(e)
+	a.Animate()
+	if called || a.EntityCount() != 0 {
+		t.Errorf("called=%v count=%d", called, a.EntityCount())
 	}
 }

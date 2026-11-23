@@ -3,131 +3,141 @@
 package aquarium
 
 import (
-	"strings"
+	"math"
 
 	"go-asciiquarium/internal/anim"
+	"go-asciiquarium/internal/flip"
 )
 
-func (q *Aquarium) addAllFish() {
-	// One fish per 350 cells of water (the 9 rows above it don't count).
-	size := (q.a.Height() - 9) * q.a.Width()
-	for range size / 350 {
-		q.addFish()
-	}
+// The fish has one sprite for each way it can face. These are their frame
+// numbers.
+const (
+	frameLeft = iota
+	frameRight
+)
+
+// fishFacingLeft is the fish as it looks when it swims to the left. This is
+// the one place that says what the fish is: the other way round is its mirror
+// image, and everything about its size comes from the sprites.
+const fishFacingLeft = "<o)))><"
+
+// fishArt is the sprite for each way the fish faces.
+var fishArt = [...]string{
+	frameLeft:  fishFacingLeft,
+	frameRight: flip.String(fishFacingLeft),
 }
 
-func (q *Aquarium) respawnFish(*anim.Entity, *anim.Animation) { q.addFish() }
+// How the fish swims, in cells per step unless said otherwise.
+const (
+	wanderMinSpeed   = .2 // a fish going nowhere in particular
+	wanderExtraSpeed = .4 // it swims up to this much faster
+	chaseSpeed       = 1.0
+
+	// turnMargin is how many cells beyond it a target must be for the fish to
+	// turn towards it. The margin keeps the fish from flipping back and forth
+	// when it is right above or below its target.
+	turnMargin = 1.0
+
+	// Chances, in percent, per step.
+	changeMindPercent = 2 // a wandering fish picks another place to go to
+	bubblePercent     = 2 // the fish blows a bubble
+)
+
+// fish is the state of the one fish.
+type fish struct {
+	q     *Aquarium
+	right bool // which way it faces
+
+	// Where it is heading when nothing else interests it, and how fast.
+	hasTarget bool
+	tx, ty    float64
+	speed     float64
+}
 
 func (q *Aquarium) addFish() {
-	if q.newFish && q.irand(12) > 8 {
-		q.addFishEntity(newFishArt)
-	} else {
-		q.addFishEntity(oldFishArt)
-	}
-}
-
-// addFishEntity adds a random fish from art, a list of (image, color mask)
-// pairs. Even pairs face right and swim right, odd pairs face left.
-//
-// The mask digits mean: 1 body, 2 dorsal fin, 3 flippers, 4 eye, 5 mouth,
-// 6 tail fin, 7 gills.
-func (q *Aquarium) addFishEntity(art []string) {
-	fishNum := int(q.rng.Float64() * float64(len(art)-1) / 2)
-	index := fishNum * 2
-	speed := q.rand(2) + .25
-	z := float64(q.irand(zFishEnd-zFishStart) + zFishStart)
-	mask := strings.ReplaceAll(art[index+1], "4", "W")
-	mask = q.randColor(mask)
-	goingLeft := fishNum%2 == 1
-	if goingLeft {
-		speed = -speed
-	}
-
-	fish := anim.NewEntity(anim.Config{
+	f := &fish{q: q, right: q.irand(len(fishArt)) == frameRight}
+	e := anim.NewEntity(anim.Config{
 		Type:             "fish",
-		Shape:            []string{art[index]},
-		AutoTrans:        true,
-		Mask:             []string{mask},
-		Z:                z,
-		Callback:         q.fishCallback,
-		Delta:            anim.Delta{X: speed},
-		DieOffscreen:     true,
-		DeathCallback:    q.respawnFish,
+		Shape:            fishArt[:],
+		Z:                zFish,
 		Physical:         true,
-		CollisionHandler: q.fishCollision,
+		Callback:         f.step,
+		CollisionHandler: eatFood,
 	})
+	e.X, e.Y = f.somewhere(e)
+	f.show(e)
+	q.a.Add(e)
+}
 
-	// Start just outside the screen on the side the fish comes from, at a
-	// random depth below the water line.
-	const maxHeight = 9
-	minHeight := q.a.Height() - fish.Height()
-	fish.Y = float64(q.irand(minHeight-maxHeight) + maxHeight)
-	if goingLeft {
-		fish.X = float64(q.a.Width() - 2)
+// area is the size of the water the fish's top-left corner can be in: its x
+// goes from 0 to maxX and its y from the first row of water to maxY, the
+// bottom row.
+func (f *fish) area(e *anim.Entity) (maxX, maxY int) {
+	lastRow := f.q.a.Height() - 1
+	return max(0, f.q.a.Width()-e.Width()), max(firstWaterRow, lastRow)
+}
+
+// somewhere is a random place in the water for the fish's top-left corner.
+func (f *fish) somewhere(e *anim.Entity) (x, y float64) {
+	maxX, maxY := f.area(e)
+	rows := maxY - firstWaterRow + 1
+	return float64(f.q.irand(maxX + 1)), float64(firstWaterRow + f.q.irand(rows))
+}
+
+// show picks the sprite for the way the fish faces. Turning around is just a
+// matter of showing the other one.
+func (f *fish) show(e *anim.Entity) {
+	if f.right {
+		e.SetFrame(frameRight)
 	} else {
-		fish.X = float64(1 - fish.Width())
+		e.SetFrame(frameLeft)
 	}
-	q.a.Add(fish)
 }
 
-func (q *Aquarium) fishCallback(fish *anim.Entity, a *anim.Animation) {
-	if q.irand(100) > 97 {
-		q.addBubble(fish, fish.Delta.X > 0)
-	}
-	fish.MoveEntity(a)
-}
+// step runs once per animation step: choose where to go, turn if that is the
+// other way, swim a bit, and now and then blow a bubble.
+func (f *fish) step(e *anim.Entity, a *anim.Animation) {
+	q := f.q
 
-// fishCollision lets a shark eat small fish: a fish touching the shark's teeth
-// is replaced by a splat. Big fish are safe.
-func (q *Aquarium) fishCollision(fish *anim.Entity, _ *anim.Animation) {
-	for _, other := range fish.Collisions() {
-		if other.Type == "teeth" && fish.Height() <= 5 {
-			q.addSplat(other.X, other.Y, other.Z)
-			fish.Kill()
-			return
+	var tx, ty, speed float64
+	if food := q.nearestFood(e); food != nil {
+		// Aim the middle of the fish at the pellet; it is eaten as soon as
+		// any part of the fish touches it.
+		maxX, maxY := f.area(e)
+		tx = min(max(food.X-middle(e), 0), float64(maxX))
+		ty = min(max(food.Y, firstWaterRow), float64(maxY))
+		speed = chaseSpeed
+		f.hasTarget = false // pick a new place to go once the food is gone
+	} else {
+		// Wander: go to a random spot, sometimes changing its mind on the way.
+		if !f.hasTarget || q.irand(percent) < changeMindPercent {
+			f.tx, f.ty = f.somewhere(e)
+			f.speed = wanderMinSpeed + q.rand(wanderExtraSpeed)
+			f.hasTarget = true
 		}
+		tx, ty, speed = f.tx, f.ty, f.speed
 	}
-}
 
-func (q *Aquarium) addBigFish() {
-	if q.newFish && q.irand(3) > 1 {
-		q.addBigFish2()
+	// Turn around when the target is clearly on the other side.
+	if dx := tx - e.X; dx > turnMargin {
+		f.right = true
+	} else if dx < -turnMargin {
+		f.right = false
+	}
+	f.show(e)
+
+	// Cells are taller than wide, so a step up or down counts more when
+	// measuring distance, and takes proportionally longer.
+	dx, dy := tx-e.X, (ty-e.Y)*q.aspect
+	if dist := math.Hypot(dx, dy); dist <= speed {
+		e.X, e.Y = tx, ty
+		f.hasTarget = false
 	} else {
-		q.addBigFish1()
+		e.X += dx / dist * speed
+		e.Y += dy / dist * speed / q.aspect
 	}
-}
 
-func (q *Aquarium) addBigFish1() {
-	q.addBigFishEntity(bigFish1Image, bigFish1Mask, 34, 3, 15)
-}
-
-func (q *Aquarium) addBigFish2() {
-	q.addBigFishEntity(bigFish2Image, bigFish2Mask, 33, 2.5, 14)
-}
-
-// addBigFishEntity adds a big fish swimming at the given speed. images and
-// masks hold the right-facing and left-facing versions; offscreen is how far
-// left of the screen a right-swimming fish starts, and bottom how many rows
-// must stay free below its top row.
-func (q *Aquarium) addBigFishEntity(images, masks []string, offscreen int, speed float64, bottom int) {
-	dir := q.irand(2)
-	x := float64(-offscreen)
-	if dir == 1 {
-		x = float64(q.a.Width() - 1)
-		speed = -speed
+	if q.irand(percent) >= percent-bubblePercent {
+		q.addBubble(e, f.right)
 	}
-	const maxHeight = 9
-	minHeight := q.a.Height() - bottom
-	q.a.Spawn(anim.Config{
-		Shape:         []string{images[dir]},
-		AutoTrans:     true,
-		Mask:          []string{q.randColor(masks[dir])},
-		X:             x,
-		Y:             float64(q.irand(minHeight-maxHeight) + maxHeight),
-		Z:             zShark,
-		Delta:         anim.Delta{X: speed},
-		DeathCallback: q.respawnRandomObject,
-		DieOffscreen:  true,
-		DefaultColor:  "YELLOW",
-	})
 }
