@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go-asciiquarium/internal/app"
+	"go-asciiquarium/internal/button"
 	"go-asciiquarium/internal/rtc"
 )
 
@@ -52,7 +53,7 @@ type hardware struct {
 
 	cs, dc, reset, busy machine.Pin
 
-	feed button
+	feed *button.Button
 }
 
 func newHardware() *hardware {
@@ -67,7 +68,8 @@ func newHardware() *hardware {
 		dc:    machine.INKY_DC,
 		reset: machine.INKY_RES,
 		busy:  machine.INKY_BUSY,
-		feed:  button{pin: machine.BUTTON_A},
+		// The button reads low when pressed.
+		feed: button.New(func() bool { return !machine.BUTTON_A.Get() }, time.Now),
 	}
 
 	for _, p := range []machine.Pin{h.cs, h.dc, h.reset} {
@@ -91,7 +93,7 @@ func newHardware() *hardware {
 	}
 
 	// The buttons are pulled up and read low when pressed.
-	h.feed.pin.Configure(machine.PinConfig{Mode: machine.PinInputPullup})
+	machine.BUTTON_A.Configure(machine.PinConfig{Mode: machine.PinInputPullup})
 
 	h.setUpClock()
 	return h
@@ -125,33 +127,25 @@ func (h *hardware) Data(data ...byte) {
 	h.cs.High()
 }
 
-// WaitIdle waits while the screen is busy. The CPU sleeps in between checks.
+// WaitIdle waits while the screen is busy. The CPU sleeps in between checks,
+// and each one also looks at the button: a picture takes a second to show, a
+// cleaning several, and that is when people press it. Without this a tap in
+// that time would be over before anything looked.
 func (h *hardware) WaitIdle() {
 	time.Sleep(busyRaiseDelay)
 	for h.busy.Get() {
+		h.feed.Look()
 		time.Sleep(busyPollInterval)
 	}
-}
-
-// button is a push button that reads low when pressed.
-type button struct {
-	pin  machine.Pin
-	down bool
-}
-
-// Pressed reports whether the button went down since the last call.
-func (b *button) Pressed() bool {
-	now := !b.pin.Get()
-	pressed := now && !b.down
-	b.down = now
-	return pressed
+	h.feed.Look()
 }
 
 // Now is the time since the badge started, which is all the tank needs.
 func (h *hardware) Now() time.Time { return time.Now() }
 
-// Wait sleeps for up to d, or until button A is pressed. It looks at the button
-// every buttonPollInterval, and in between the scheduler idles the processor.
+// Wait sleeps for up to d, or until button A is pressed, which includes a press
+// that happened while the screen was refreshing. It looks at the button every
+// buttonPollInterval, and in between the scheduler idles the processor.
 // That is light sleep, which is as far as TinyGo can sleep today: it has no
 // support for the chip's deep sleep. A d of zero only looks at the button.
 func (h *hardware) Wait(d time.Duration) app.Event {

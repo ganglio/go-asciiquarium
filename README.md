@@ -141,6 +141,7 @@ launcher or menu.
 | `internal/aquarium` | the scene: surface, algae, bubbles, fish, food |
 | `internal/flip` | which characters turn into each other when mirrored (`<` and `>`...), used by the fish and by the font |
 | `internal/anim` | a small ASCII animation engine (a port of the part of Perl's `Term::Animation` the original aquarium used) |
+| `internal/button` | a push button: remembers a press until asked, and debounces it |
 | `internal/epd` | the e-ink side: a 1-bit frame, the font, the SSD1680 driver, and when to clean |
 
 **Drawing.** The scene is a grid of characters, 44 columns by 22 rows. Each
@@ -266,8 +267,11 @@ screen stays blank or shows rubbish, look here first.
   high for half a second, as Pimoroni's firmware does it, and nobody has run it from
   Go. If the badge never sleeps at night, the clock could not be read: a message
   on the serial port says so.
-- **Button during a refresh.** A press while the screen is refreshing is seen
-  after it, if the button is still down; a short press can be missed.
+- **Button during a refresh.** The button is looked at every 5 ms while the screen
+  is busy, and a press is remembered until the main loop asks, so a tap during a
+  refresh counts, and is acted on when the picture is done. It is debounced
+  (`internal/button`). Whether the contacts of the real button need a longer
+  `Debounce` is for the badge to say.
 
 ## Not done yet
 
